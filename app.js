@@ -1,5 +1,7 @@
-import { firebaseConfig } from './firebase-config.js';
-import { createLocalStore, newIngredientId } from './local-store.js';
+// El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
+// súbelo a la vez en index.html y aquí.
+import { firebaseConfig } from './firebase-config.js?v=6';
+import { createLocalStore, newIngredientId } from './local-store.js?v=6';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
@@ -298,7 +300,7 @@ function renderShopping(view) {
     if (ing.have) return;
     const key = ing.name.toLowerCase();
     if (!groups.has(key)) groups.set(key, { name: ing.name, items: [] });
-    groups.get(key).items.push({ day, entry, where: withQty(`${dayShort(day)} · ${entry.name}`, ing.qty) });
+    groups.get(key).items.push({ day, entry, qty: ing.qty, where: withQty(`${dayShort(day)} · ${entry.name}`, ing.qty) });
   })));
 
   if (!groups.size) {
@@ -322,8 +324,9 @@ function renderShopping(view) {
             });
           },
         });
+        const qtys = g.items.map(i => i.qty).filter(Boolean);
         const text = el('div', { className: 'name' },
-          el('div', { textContent: g.name }),
+          el('div', {}, g.name, qtys.length ? el('span', { className: 'qty-tag', textContent: qtys.join(' + ') }) : ''),
           el('div', { className: 'where', textContent: g.items.map(i => i.where).join(', ') }));
         ul.append(el('li', {}, text, bought));
       });
@@ -400,7 +403,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=6');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {
