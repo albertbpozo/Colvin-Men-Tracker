@@ -19,13 +19,23 @@ const handlers = {
   onStatus(s) { session = s; errorMessage = ''; render(); },
   onError(err) {
     console.error(err);
-    errorMessage = err.during === 'sign-in' ? 'No se pudo iniciar sesión. Inténtalo de nuevo.'
+    errorMessage = err.during === 'sign-in' ? signInMessage(err)
       : err.code === 'permission-denied' ? 'No tienes permiso para hacer este cambio.'
       : 'No se pudo guardar el cambio. Inténtalo de nuevo.';
     render();
-    setTimeout(() => { errorMessage = ''; render(); }, 6000);
+    if (err.during !== 'sign-in') setTimeout(() => { errorMessage = ''; render(); }, 6000);
   },
 };
+
+function signInMessage(err) {
+  const reasons = {
+    'auth/unauthorized-domain': 'Este dominio no está autorizado en Firebase (Authentication → Settings → Authorized domains).',
+    'auth/operation-not-allowed': 'El inicio de sesión con Google no está activado en Firebase (Authentication → Sign-in method).',
+    'auth/network-request-failed': 'Sin conexión con Google. Comprueba tu internet.',
+    'auth/web-storage-unsupported': 'El navegador bloquea el almacenamiento. Desactiva el modo privado o ábrelo en Chrome/Safari.',
+  };
+  return `No se pudo iniciar sesión. ${reasons[err.code] || 'Inténtalo de nuevo.'} (código: ${err.code || err.message})`;
+}
 
 const missingCount = entries =>
   entries.reduce((n, e) => n + e.ingredients.filter(i => !i.have).length, 0);
