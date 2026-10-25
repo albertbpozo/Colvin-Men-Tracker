@@ -1,7 +1,7 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=6';
-import { createLocalStore, newIngredientId } from './local-store.js?v=6';
+import { firebaseConfig } from './firebase-config.js?v=7';
+import { createLocalStore, newIngredientId } from './local-store.js?v=7';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
@@ -335,7 +335,12 @@ function renderShopping(view) {
 
   const reset = el('button', {
     textContent: 'Vaciar el menú de esta semana',
-    onclick: () => { if (confirm(`¿Borrar todos los platos de la semana del ${weekLabel()}?`)) store.resetWeek(); },
+    onclick: () => {
+      // Doble confirmación: vaciar la semana no se puede deshacer.
+      if (!confirm(`¿Borrar todos los platos de la semana del ${weekLabel()}?`)) return;
+      if (!confirm('¿Seguro? Se borrarán todos los platos de la semana y no se podrán recuperar.')) return;
+      store.resetWeek();
+    },
   });
   view.append(el('div', { className: 'toolbar' }, reset));
 }
@@ -403,7 +408,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=6');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=7');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {
