@@ -1,12 +1,13 @@
 // Almacenamiento en el navegador (modo sin Firebase).
 const STORAGE_KEY = 'menu-semanal-v2';
 const LEGACY_KEY = 'menu-semanal-v1';
+const GENERAL_KEY = 'menu-semanal-compra';
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 // `byDate` guarda los platos por fecha 'AAAA-MM-DD'. La versión anterior los
 // guardaba por nombre de día ('Lunes'…); `legacyDay` lo traduce a una fecha.
-export function createLocalStore({ onData, legacyDay }) {
+export function createLocalStore({ onData, onGeneral, legacyDay }) {
   let byDate = {};
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
@@ -19,6 +20,10 @@ export function createLocalStore({ onData, legacyDay }) {
       });
     }
   } catch (e) { /* datos corruptos o almacenamiento no disponible */ }
+
+  let general = [];
+  try { general = JSON.parse(localStorage.getItem(GENERAL_KEY)) || []; } catch (e) { /* sin datos */ }
+  queueMicrotask(() => onGeneral(general));
 
   let week = [];
   const emit = () => onData(Object.fromEntries(week.map(d => [d, byDate[d] || []])));
@@ -46,6 +51,11 @@ export function createLocalStore({ onData, legacyDay }) {
       const e = find(date, entry.id);
       if (e) e.ingredients = ingredients;
       commit();
+    },
+    setGeneral(items) {
+      general = items;
+      try { localStorage.setItem(GENERAL_KEY, JSON.stringify(general)); } catch (e) { /* sin persistencia */ }
+      onGeneral(general);
     },
     resetWeek() {
       week.forEach(d => delete byDate[d]);

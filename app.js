@@ -33,15 +33,18 @@ const legacyDay = name => {
 
 let week = weekOf(mondayOf(new Date()));
 let days = {};
+let general = []; // lista de compra general, la misma para todas las semanas
 let current = todayISO();
 let lastMeal = MEALS[0];
 // En modo local no hay sesión; con Firebase guarda el estado de acceso.
 let session = firebaseConfig ? { status: 'loading' } : null;
 let errorMessage = '';
+let focusNext = null; // campo que debe recibir el foco tras el próximo redibujado
 let store;
 
 const handlers = {
   onData(data) { days = data; render(); },
+  onGeneral(items) { general = items; render(); },
   onStatus(s) { session = s; errorMessage = ''; render(); },
   onError(err) {
     console.error(err);
@@ -127,7 +130,7 @@ function renderTabs() {
     tabs.append(b);
   };
   week.forEach(d => make(d, dayShort(d), missingCount(days[d]), d === todayISO()));
-  const totalMissing = week.reduce((n, d) => n + missingCount(days[d]), 0);
+  const totalMissing = general.length + week.reduce((n, d) => n + missingCount(days[d]), 0);
   make(SHOPPING, '🛒 Lista de compra', totalMissing);
   if (isOwner()) make(SHARING, '👥 Compartir');
 }
@@ -197,12 +200,15 @@ function renderDay(view, day) {
 
     const addForm = node.querySelector('.add-ingredient');
     addForm.ingredient.dataset.focusKey = `ing-${entry.id}`;
+    addForm.qty.dataset.focusKey = `qty-${entry.id}`;
     addForm.onsubmit = ev => {
       ev.preventDefault();
       const name = addForm.ingredient.value.trim();
       if (!name) return;
-      addForm.ingredient.value = '';
-      store.setIngredients(day, entry, [...entry.ingredients, { id: newIngredientId(), name, have: false }]);
+      const qty = addForm.qty.value.trim();
+      addForm.ingredient.value = addForm.qty.value = '';
+      focusNext = `ing-${entry.id}`;
+      store.setIngredients(day, entry, [...entry.ingredients, { id: newIngredientId(), name, qty, have: false }]);
     };
     view.append(node);
   });
@@ -222,12 +228,67 @@ function ingredientRow(day, entry, ing) {
     title: 'Quitar ingrediente',
     onclick: () => store.setIngredients(day, entry, entry.ingredients.filter(i => i.id !== ing.id)),
   });
-  return el('li', {}, status, el('span', { className: 'name', textContent: ing.name }), del);
+  const qty = el('button', {
+    className: ing.qty ? 'qty' : 'qty empty-qty',
+    textContent: ing.qty || '+ cantidad',
+    title: 'Cambiar cantidad',
+    onclick: () => {
+      const value = prompt(`Cantidad de ${ing.name}:`, ing.qty || '');
+      if (value === null) return;
+      store.setIngredients(day, entry,
+        entry.ingredients.map(i => i.id === ing.id ? { ...i, qty: value.trim() } : i));
+    },
+  });
+  return el('li', {}, status, el('span', { className: 'name', textContent: ing.name }), qty, del);
 }
 
+const withQty = (text, qty) => qty ? `${text} (${qty})` : text;
+
 function renderShopping(view) {
+  // ---- Lista general: productos sueltos, igual para todas las semanas ----
+  view.append(el('h2', { textContent: 'Lista de compra general' }));
+  const form = el('form', { className: 'add-extra' });
+  form.innerHTML = `
+    <input name="item" data-focus-key="extra" placeholder="Añadir (p. ej. Leche)" autocomplete="off" required>
+    <input name="qty" data-focus-key="extra-qty" class="qty-input" placeholder="Cantidad" autocomplete="off">
+    <button type="submit">Añadir</button>`;
+  form.onsubmit = ev => {
+    ev.preventDefault();
+    const name = form.item.value.trim();
+    if (!name) return;
+    const item = { id: newIngredientId(), name, qty: form.qty.value.trim() };
+    form.item.value = form.qty.value = '';
+    focusNext = 'extra';
+    store.setGeneral([...general, item]);
+  };
+  view.append(form);
+
+  if (!general.length) {
+    view.append(el('p', { className: 'empty', textContent: 'La lista general está vacía.' }));
+  } else {
+    const ul = el('ul', { className: 'ingredients shopping entry' });
+    general.forEach(item => {
+      const qty = el('button', {
+        className: item.qty ? 'qty' : 'qty empty-qty',
+        textContent: item.qty || '+ cantidad',
+        title: 'Cambiar cantidad',
+        onclick: () => {
+          const value = prompt(`Cantidad de ${item.name}:`, item.qty || '');
+          if (value !== null) store.setGeneral(general.map(i => i.id === item.id ? { ...i, qty: value.trim() } : i));
+        },
+      });
+      const bought = el('button', {
+        className: 'status missing', textContent: 'Comprado', title: 'Quitar de la lista',
+        onclick: () => store.setGeneral(general.filter(i => i.id !== item.id)),
+      });
+      ul.append(el('li', {}, el('span', { className: 'name', textContent: item.name }), qty, bought));
+    });
+    view.append(ul);
+  }
+
+  // ---- Lo que falta para el menú de la semana visible ----
   view.append(
-    el('h2', { textContent: 'Lista de compra' }),
+    el('h2', { className: 'section', textContent: 'Para el menú de la semana' }),
     el('p', { className: 'hint', textContent: `Ingredientes que faltan para la semana del ${weekLabel()}.` }),
   );
 
@@ -237,7 +298,7 @@ function renderShopping(view) {
     if (ing.have) return;
     const key = ing.name.toLowerCase();
     if (!groups.has(key)) groups.set(key, { name: ing.name, items: [] });
-    groups.get(key).items.push({ day, entry, where: `${dayShort(day)} · ${entry.name}` });
+    groups.get(key).items.push({ day, entry, where: withQty(`${dayShort(day)} · ${entry.name}`, ing.qty) });
   })));
 
   if (!groups.size) {
@@ -270,7 +331,7 @@ function renderShopping(view) {
   }
 
   const reset = el('button', {
-    textContent: 'Vaciar esta semana',
+    textContent: 'Vaciar el menú de esta semana',
     onclick: () => { if (confirm(`¿Borrar todos los platos de la semana del ${weekLabel()}?`)) store.resetWeek(); },
   });
   view.append(el('div', { className: 'toolbar' }, reset));
@@ -328,10 +389,12 @@ function render() {
   else if (current === SHARING && isOwner()) renderSharing(view);
   else renderDay(view, week.includes(current) ? current : (current = week[0]));
 
-  if (focusKey) {
-    const target = view.querySelector(`[data-focus-key="${focusKey}"]`);
-    if (target) { target.value = typed ?? ''; target.focus(); }
+  const key = focusNext || focusKey;
+  if (key) {
+    const target = view.querySelector(`[data-focus-key="${key}"]`);
+    if (target) { target.value = focusNext ? '' : typed ?? ''; target.focus(); }
   }
+  focusNext = null;
 }
 
 if (firebaseConfig) {

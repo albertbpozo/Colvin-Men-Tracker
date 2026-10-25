@@ -1,10 +1,13 @@
 // Menú compartido en Firestore con inicio de sesión de Google.
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2';
 const MENU_ID = 'principal';
+// La lista de compra general es una entrada con id fijo y day 'general', así
+// queda fuera de las consultas por semana y valen las mismas reglas.
+const GENERAL_ID = 'compra-general';
 
 // Los platos se guardan con `day` = fecha 'AAAA-MM-DD'. Las versiones antiguas
 // usaban el nombre del día ('Lunes'…); `legacyDay` lo traduce a una fecha.
-export async function createFirebaseStore(config, { onData, onStatus, onError, legacyDay, legacyNames }) {
+export async function createFirebaseStore(config, { onData, onGeneral, onStatus, onError, legacyDay, legacyNames }) {
   const [{ initializeApp }, auth, fs] = await Promise.all([
     import(`${SDK}/firebase-app.js`),
     import(`${SDK}/firebase-auth.js`),
@@ -85,6 +88,8 @@ export async function createFirebaseStore(config, { onData, onStatus, onError, l
       if (!ready) {
         ready = true;
         listenWeek();
+        listeners.push(fs.onSnapshot(entryRef(GENERAL_ID),
+          snap => onGeneral(snap.exists() ? snap.data().ingredients || [] : []), fail));
         migrateLegacyEntries().catch(fail);
       }
     }, () => onStatus({ status: 'denied', email })));
@@ -114,6 +119,11 @@ export async function createFirebaseStore(config, { onData, onStatus, onError, l
     },
     setIngredients(day, entry, ingredients) {
       fs.updateDoc(entryRef(entry.id), { ingredients }).catch(fail);
+    },
+    setGeneral(items) {
+      fs.setDoc(entryRef(GENERAL_ID), {
+        day: 'general', meal: 'Compra', name: 'Lista de compra general', kind: 'general', ingredients: items,
+      }).catch(fail);
     },
     resetWeek() {
       const batch = fs.writeBatch(db);
