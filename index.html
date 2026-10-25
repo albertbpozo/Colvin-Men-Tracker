@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Menú semanal</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Menú semanal</h1>
+    <nav id="tabs" class="tabs" aria-label="Días de la semana"></nav>
+  </header>
+
+  <main id="view"></main>
+
+  <template id="entry-template">
+    <article class="entry">
+      <div class="entry-head">
+        <span class="meal"></span>
+        <h3 class="dish"></h3>
+        <span class="counter"></span>
+        <button class="icon delete-entry" title="Eliminar plato" aria-label="Eliminar plato">✕</button>
+      </div>
+      <ul class="ingredients"></ul>
+      <form class="add-ingredient">
+        <input name="ingredient" placeholder="Añadir ingrediente…" autocomplete="off" required>
+        <button type="submit">Añadir</button>
+      </form>
+    </article>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
