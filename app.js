@@ -1,13 +1,39 @@
 import { firebaseConfig } from './firebase-config.js';
 import { createLocalStore, newIngredientId } from './local-store.js';
 
-const DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
 const SHOPPING = 'compra';
 const SHARING = 'compartir';
 
-let days = Object.fromEntries(DAYS.map(d => [d, []]));
-let current = DAYS[(new Date().getDay() + 6) % 7]; // lunes = 0
+// ---------- Fechas (siempre en hora local, como 'AAAA-MM-DD') ----------
+
+const pad = n => String(n).padStart(2, '0');
+const toISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fromISO = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const weekdayIndex = d => (d.getDay() + 6) % 7; // lunes = 0
+const mondayOf = d => addDays(d, -weekdayIndex(d));
+const weekOf = monday => DAY_NAMES.map((_, i) => toISO(addDays(monday, i)));
+const todayISO = () => toISO(new Date());
+
+const shortDate = new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short' });
+const dayShort = iso => `${DAY_NAMES[weekdayIndex(fromISO(iso))].slice(0, 3)} ${fromISO(iso).getDate()}`;
+const dayLong = iso => {
+  const text = fromISO(iso).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+  return text[0].toUpperCase() + text.slice(1);
+};
+const weekLabel = () => `${shortDate.format(fromISO(week[0]))} – ${shortDate.format(fromISO(week[6]))}`;
+
+// Los platos antiguos se guardaban por nombre de día: se pasan a la semana actual.
+const legacyDay = name => {
+  const i = DAY_NAMES.indexOf(name);
+  return i < 0 ? undefined : toISO(addDays(mondayOf(new Date()), i));
+};
+
+let week = weekOf(mondayOf(new Date()));
+let days = {};
+let current = todayISO();
 let lastMeal = MEALS[0];
 // En modo local no hay sesión; con Firebase guarda el estado de acceso.
 let session = firebaseConfig ? { status: 'loading' } : null;
@@ -37,7 +63,7 @@ function signInMessage(err) {
   return `No se pudo iniciar sesión. ${reasons[err.code] || 'Inténtalo de nuevo.'} (código: ${err.code || err.message})`;
 }
 
-const missingCount = entries =>
+const missingCount = (entries = []) =>
   entries.reduce((n, e) => n + e.ingredients.filter(i => !i.have).length, 0);
 
 const sortEntries = entries => [...entries].sort((a, b) =>
@@ -63,19 +89,45 @@ function renderAccount() {
   );
 }
 
+function goToWeek(monday, selectToday = false) {
+  const offset = week.indexOf(current);
+  week = weekOf(monday);
+  days = {};
+  if (selectToday) current = todayISO();
+  else if (offset >= 0) current = week[offset];
+  store?.setWeek(week);
+  render();
+}
+
+function renderWeekNav() {
+  const nav = document.getElementById('week-nav');
+  nav.innerHTML = '';
+  if (session && session.status !== 'ready') return;
+  const monday = fromISO(week[0]);
+  const isThisWeek = week.includes(todayISO());
+  nav.append(
+    el('button', { className: 'icon', textContent: '‹', title: 'Semana anterior', onclick: () => goToWeek(addDays(monday, -7)) }),
+    el('span', { className: 'week-label', textContent: weekLabel() + (isThisWeek ? ' · esta semana' : '') }),
+    el('button', { className: 'icon', textContent: '›', title: 'Semana siguiente', onclick: () => goToWeek(addDays(monday, 7)) }),
+  );
+  if (!isThisWeek) {
+    nav.append(el('button', { className: 'today-btn', textContent: 'Hoy', onclick: () => goToWeek(mondayOf(new Date()), true) }));
+  }
+}
+
 function renderTabs() {
   const tabs = document.getElementById('tabs');
   tabs.innerHTML = '';
   if (session && session.status !== 'ready') return;
 
-  const make = (key, label, badge) => {
-    const b = el('button', { className: 'tab', textContent: label, onclick: () => { current = key; render(); } });
+  const make = (key, label, badge, isToday) => {
+    const b = el('button', { className: isToday ? 'tab today' : 'tab', textContent: label, onclick: () => { current = key; render(); } });
     b.setAttribute('aria-selected', String(current === key));
     if (badge) b.append(el('span', { className: 'badge', textContent: badge }));
     tabs.append(b);
   };
-  DAYS.forEach(d => make(d, d.slice(0, 3), missingCount(days[d])));
-  const totalMissing = DAYS.reduce((n, d) => n + missingCount(days[d]), 0);
+  week.forEach(d => make(d, dayShort(d), missingCount(days[d]), d === todayISO()));
+  const totalMissing = week.reduce((n, d) => n + missingCount(days[d]), 0);
   make(SHOPPING, '🛒 Lista de compra', totalMissing);
   if (isOwner()) make(SHARING, '👥 Compartir');
 }
@@ -100,7 +152,7 @@ function renderGate(view) {
 }
 
 function renderDay(view, day) {
-  view.append(el('h2', { textContent: day }));
+  view.append(el('h2', { textContent: dayLong(day) + (day === todayISO() ? ' · hoy' : '') }));
 
   const form = el('form', { className: 'add-entry' });
   form.innerHTML = `
@@ -117,7 +169,7 @@ function renderDay(view, day) {
   };
   view.append(form);
 
-  const entries = sortEntries(days[day]);
+  const entries = sortEntries(days[day] || []);
   if (!entries.length) {
     view.append(el('p', { className: 'empty', textContent: 'Aún no hay platos para este día.' }));
     return;
@@ -174,15 +226,18 @@ function ingredientRow(day, entry, ing) {
 }
 
 function renderShopping(view) {
-  view.append(el('h2', { textContent: 'Lista de compra (ingredientes que faltan)' }));
+  view.append(
+    el('h2', { textContent: 'Lista de compra' }),
+    el('p', { className: 'hint', textContent: `Ingredientes que faltan para la semana del ${weekLabel()}.` }),
+  );
 
   // Agrupa por nombre de ingrediente (sin distinguir mayúsculas)
   const groups = new Map();
-  DAYS.forEach(day => days[day].forEach(entry => entry.ingredients.forEach(ing => {
+  week.forEach(day => (days[day] || []).forEach(entry => entry.ingredients.forEach(ing => {
     if (ing.have) return;
     const key = ing.name.toLowerCase();
     if (!groups.has(key)) groups.set(key, { name: ing.name, items: [] });
-    groups.get(key).items.push({ day, entry, where: `${day.slice(0, 3)} · ${entry.name}` });
+    groups.get(key).items.push({ day, entry, where: `${dayShort(day)} · ${entry.name}` });
   })));
 
   if (!groups.size) {
@@ -215,8 +270,8 @@ function renderShopping(view) {
   }
 
   const reset = el('button', {
-    textContent: 'Vaciar menú de la semana',
-    onclick: () => { if (confirm('¿Borrar todos los platos de la semana?')) store.resetWeek(); },
+    textContent: 'Vaciar esta semana',
+    onclick: () => { if (confirm(`¿Borrar todos los platos de la semana del ${weekLabel()}?`)) store.resetWeek(); },
   });
   view.append(el('div', { className: 'toolbar' }, reset));
 }
@@ -262,6 +317,7 @@ function render() {
   const typed = active?.value;
 
   renderAccount();
+  renderWeekNav();
   renderTabs();
   const view = document.getElementById('view');
   view.innerHTML = '';
@@ -270,7 +326,7 @@ function render() {
   if (session && session.status !== 'ready') renderGate(view);
   else if (current === SHOPPING) renderShopping(view);
   else if (current === SHARING && isOwner()) renderSharing(view);
-  else renderDay(view, DAYS.includes(current) ? current : (current = DAYS[0]));
+  else renderDay(view, week.includes(current) ? current : (current = week[0]));
 
   if (focusKey) {
     const target = view.querySelector(`[data-focus-key="${focusKey}"]`);
@@ -282,11 +338,13 @@ if (firebaseConfig) {
   render();
   try {
     const { createFirebaseStore } = await import('./firebase-store.js');
-    store = await createFirebaseStore(firebaseConfig, DAYS, handlers);
+    store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
+    store.setWeek(week);
   } catch (err) {
     console.error(err);
     document.getElementById('view').textContent = 'No se pudo conectar. Comprueba tu conexión a internet y recarga la página.';
   }
 } else {
-  store = createLocalStore(DAYS, handlers);
+  store = createLocalStore({ ...handlers, legacyDay });
+  store.setWeek(week);
 }

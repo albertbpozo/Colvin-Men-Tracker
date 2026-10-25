@@ -2,7 +2,9 @@
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2';
 const MENU_ID = 'principal';
 
-export async function createFirebaseStore(config, days, { onData, onStatus, onError }) {
+// Los platos se guardan con `day` = fecha 'AAAA-MM-DD'. Las versiones antiguas
+// usaban el nombre del día ('Lunes'…); `legacyDay` lo traduce a una fecha.
+export async function createFirebaseStore(config, { onData, onStatus, onError, legacyDay, legacyNames }) {
   const [{ initializeApp }, auth, fs] = await Promise.all([
     import(`${SDK}/firebase-app.js`),
     import(`${SDK}/firebase-auth.js`),
@@ -21,19 +23,42 @@ export async function createFirebaseStore(config, days, { onData, onStatus, onEr
   const fail = err => onError(err);
 
   let listeners = [];
+  let stopEntries = null;
+  let ready = false;
+  let week = [];
   let entryIds = [];
-  const stopListening = () => { listeners.forEach(stop => stop()); listeners = []; };
+  const stopListening = () => {
+    listeners.forEach(stop => stop());
+    listeners = [];
+    stopEntries?.();
+    stopEntries = null;
+    ready = false;
+  };
 
-  function listenEntries() {
-    listeners.push(fs.onSnapshot(entriesRef, snap => {
-      const data = Object.fromEntries(days.map(d => [d, []]));
+  // Escucha solo los platos de la semana visible.
+  function listenWeek() {
+    stopEntries?.();
+    stopEntries = null;
+    if (!ready || !week.length) return;
+    const dates = week;
+    const q = fs.query(entriesRef, fs.where('day', '>=', dates[0]), fs.where('day', '<=', dates[dates.length - 1]));
+    stopEntries = fs.onSnapshot(q, snap => {
+      const data = Object.fromEntries(dates.map(d => [d, []]));
       entryIds = snap.docs.map(d => d.id);
       snap.docs.forEach(d => {
         const entry = { id: d.id, ...d.data() };
         data[entry.day]?.push(entry);
       });
       onData(data);
-    }, fail));
+    }, fail);
+  }
+
+  async function migrateLegacyEntries() {
+    const snap = await fs.getDocs(fs.query(entriesRef, fs.where('day', 'in', legacyNames)));
+    snap.docs.forEach(d => {
+      const date = legacyDay(d.data().day);
+      if (date) fs.updateDoc(d.ref, { day: date }).catch(fail);
+    });
   }
 
   auth.onAuthStateChanged(authInstance, user => {
@@ -43,7 +68,6 @@ export async function createFirebaseStore(config, days, { onData, onStatus, onEr
     const email = user.email.toLowerCase();
     onStatus({ status: 'loading', email });
 
-    let entriesStarted = false;
     listeners.push(fs.onSnapshot(menuRef, { includeMetadataChanges: true }, async snap => {
       if (!snap.exists()) {
         // Solo creamos el menú cuando el servidor confirma que no existe;
@@ -58,7 +82,11 @@ export async function createFirebaseStore(config, days, { onData, onStatus, onEr
       }
       const menu = snap.data();
       onStatus({ status: 'ready', email, owner: menu.owner, members: menu.members || [] });
-      if (!entriesStarted) { entriesStarted = true; listenEntries(); }
+      if (!ready) {
+        ready = true;
+        listenWeek();
+        migrateLegacyEntries().catch(fail);
+      }
     }, () => onStatus({ status: 'denied', email })));
   });
 
@@ -70,6 +98,10 @@ export async function createFirebaseStore(config, days, { onData, onStatus, onEr
         if (err.code === 'auth/popup-blocked') auth.signInWithRedirect(authInstance, provider).catch(signInFailed);
         else if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') signInFailed(err);
       });
+    },
+    setWeek(dates) {
+      week = dates;
+      listenWeek();
     },
     signOut() {
       auth.signOut(authInstance).catch(fail);
