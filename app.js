@@ -1,88 +1,115 @@
-const STORAGE_KEY = 'menu-semanal-v1';
+import { firebaseConfig } from './firebase-config.js';
+import { createLocalStore, newIngredientId } from './local-store.js';
+
 const DAYS = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
 const SHOPPING = 'compra';
+const SHARING = 'compartir';
 
-const uid = () => Math.random().toString(36).slice(2, 10);
-
-function load() {
-  try {
-    const data = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (data && data.days) return data;
-  } catch (e) { /* datos corruptos o almacenamiento no disponible */ }
-  return { days: Object.fromEntries(DAYS.map(d => [d, []])) };
-}
-
-let state = load();
+let days = Object.fromEntries(DAYS.map(d => [d, []]));
 let current = DAYS[(new Date().getDay() + 6) % 7]; // lunes = 0
+let lastMeal = MEALS[0];
+// En modo local no hay sesión; con Firebase guarda el estado de acceso.
+let session = firebaseConfig ? { status: 'loading' } : null;
+let errorMessage = '';
+let store;
 
-function save() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* sin persistencia */ }
-  render();
-}
+const handlers = {
+  onData(data) { days = data; render(); },
+  onStatus(s) { session = s; errorMessage = ''; render(); },
+  onError(err) {
+    console.error(err);
+    errorMessage = err.during === 'sign-in' ? 'No se pudo iniciar sesión. Inténtalo de nuevo.'
+      : err.code === 'permission-denied' ? 'No tienes permiso para hacer este cambio.'
+      : 'No se pudo guardar el cambio. Inténtalo de nuevo.';
+    render();
+    setTimeout(() => { errorMessage = ''; render(); }, 6000);
+  },
+};
 
 const missingCount = entries =>
   entries.reduce((n, e) => n + e.ingredients.filter(i => !i.have).length, 0);
 
-function findEntry(day, id) {
-  return state.days[day].find(e => e.id === id);
+const sortEntries = entries => [...entries].sort((a, b) =>
+  MEALS.indexOf(a.meal) - MEALS.indexOf(b.meal) || (a.createdAt || 0) - (b.createdAt || 0));
+
+const isOwner = () => session?.status === 'ready' && session.email === session.owner;
+
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
 }
 
 // ---------- Render ----------
 
+function renderAccount() {
+  const box = document.getElementById('account');
+  box.innerHTML = '';
+  if (!session || !session.email) return;
+  box.append(
+    el('span', { className: 'email', textContent: session.email }),
+    el('button', { textContent: 'Salir', onclick: () => store.signOut() }),
+  );
+}
+
 function renderTabs() {
   const tabs = document.getElementById('tabs');
   tabs.innerHTML = '';
+  if (session && session.status !== 'ready') return;
+
   const make = (key, label, badge) => {
-    const b = document.createElement('button');
-    b.className = 'tab';
+    const b = el('button', { className: 'tab', textContent: label, onclick: () => { current = key; render(); } });
     b.setAttribute('aria-selected', String(current === key));
-    b.textContent = label;
-    if (badge) {
-      const s = document.createElement('span');
-      s.className = 'badge';
-      s.textContent = badge;
-      b.append(s);
-    }
-    b.onclick = () => { current = key; render(); };
+    if (badge) b.append(el('span', { className: 'badge', textContent: badge }));
     tabs.append(b);
   };
-  DAYS.forEach(d => make(d, d.slice(0, 3), missingCount(state.days[d])));
-  const totalMissing = DAYS.reduce((n, d) => n + missingCount(state.days[d]), 0);
+  DAYS.forEach(d => make(d, d.slice(0, 3), missingCount(days[d])));
+  const totalMissing = DAYS.reduce((n, d) => n + missingCount(days[d]), 0);
   make(SHOPPING, '🛒 Lista de compra', totalMissing);
+  if (isOwner()) make(SHARING, '👥 Compartir');
 }
 
-function renderDay(day) {
-  const view = document.getElementById('view');
-  view.innerHTML = '';
+function renderGate(view) {
+  const gate = el('div', { className: 'gate' });
+  if (session.status === 'signed-out') {
+    gate.append(
+      el('p', { textContent: 'Entra con tu cuenta de Google para ver el menú compartido.' }),
+      el('button', { className: 'primary', textContent: 'Entrar con Google', onclick: () => store.signIn() }),
+    );
+  } else if (session.status === 'denied') {
+    gate.append(
+      el('p', { textContent: `La cuenta ${session.email} no tiene acceso a este menú.` }),
+      el('p', { textContent: 'Pide a quien lo creó que añada tu email en «Compartir».' }),
+      el('button', { textContent: 'Entrar con otra cuenta', onclick: () => store.signOut() }),
+    );
+  } else {
+    gate.append(el('p', { textContent: 'Cargando…' }));
+  }
+  view.append(gate);
+}
 
-  const h = document.createElement('h2');
-  h.textContent = day;
-  view.append(h);
+function renderDay(view, day) {
+  view.append(el('h2', { textContent: day }));
 
-  const form = document.createElement('form');
-  form.className = 'add-entry';
+  const form = el('form', { className: 'add-entry' });
   form.innerHTML = `
-    <select name="meal">${MEALS.map(m => `<option>${m}</option>`).join('')}</select>
-    <input name="dish" placeholder="Nombre del plato (p. ej. Lentejas)" autocomplete="off" required>
+    <select name="meal">${MEALS.map(m => `<option${m === lastMeal ? ' selected' : ''}>${m}</option>`).join('')}</select>
+    <input name="dish" data-focus-key="dish" placeholder="Nombre del plato (p. ej. Lentejas)" autocomplete="off" required>
     <button type="submit">Añadir plato</button>`;
+  form.meal.onchange = () => { lastMeal = form.meal.value; };
   form.onsubmit = ev => {
     ev.preventDefault();
     const dish = form.dish.value.trim();
     if (!dish) return;
-    state.days[day].push({ id: uid(), meal: form.meal.value, name: dish, ingredients: [] });
-    state.days[day].sort((a, b) => MEALS.indexOf(a.meal) - MEALS.indexOf(b.meal));
-    save();
-    view.querySelector('.add-entry input[name="dish"]')?.focus();
+    form.dish.value = '';
+    store.addEntry(day, form.meal.value, dish);
   };
   view.append(form);
 
-  const entries = state.days[day];
+  const entries = sortEntries(days[day]);
   if (!entries.length) {
-    const p = document.createElement('p');
-    p.className = 'empty';
-    p.textContent = 'Aún no hay platos para este día.';
-    view.append(p);
+    view.append(el('p', { className: 'empty', textContent: 'Aún no hay platos para este día.' }));
     return;
   }
 
@@ -100,122 +127,156 @@ function renderDay(day) {
     }
 
     node.querySelector('.delete-entry').onclick = () => {
-      if (!confirm(`¿Eliminar "${entry.name}"?`)) return;
-      state.days[day] = state.days[day].filter(e => e.id !== entry.id);
-      save();
+      if (confirm(`¿Eliminar "${entry.name}"?`)) store.deleteEntry(day, entry);
     };
 
     const list = node.querySelector('.ingredients');
-    entry.ingredients.forEach(ing => list.append(ingredientRow(day, entry.id, ing)));
+    entry.ingredients.forEach(ing => list.append(ingredientRow(day, entry, ing)));
 
     const addForm = node.querySelector('.add-ingredient');
+    addForm.ingredient.dataset.focusKey = `ing-${entry.id}`;
     addForm.onsubmit = ev => {
       ev.preventDefault();
       const name = addForm.ingredient.value.trim();
       if (!name) return;
-      findEntry(day, entry.id).ingredients.push({ id: uid(), name, have: false });
-      save();
-      document.querySelector(`[data-entry="${entry.id}"] .add-ingredient input`)?.focus();
+      addForm.ingredient.value = '';
+      store.setIngredients(day, entry, [...entry.ingredients, { id: newIngredientId(), name, have: false }]);
     };
-    node.dataset.entry = entry.id;
     view.append(node);
   });
 }
 
-function ingredientRow(day, entryId, ing) {
-  const li = document.createElement('li');
-
-  const status = document.createElement('button');
-  status.className = `status ${ing.have ? 'have' : 'missing'}`;
-  status.textContent = ing.have ? 'Tengo' : 'Falta';
-  status.title = 'Pulsa para cambiar';
-  status.onclick = () => { ing.have = !ing.have; save(); };
-
-  const name = document.createElement('span');
-  name.className = 'name';
-  name.textContent = ing.name;
-
-  const del = document.createElement('button');
-  del.className = 'icon';
-  del.textContent = '✕';
-  del.title = 'Quitar ingrediente';
-  del.onclick = () => {
-    const entry = findEntry(day, entryId);
-    entry.ingredients = entry.ingredients.filter(i => i.id !== ing.id);
-    save();
-  };
-
-  li.append(status, name, del);
-  return li;
+function ingredientRow(day, entry, ing) {
+  const status = el('button', {
+    className: `status ${ing.have ? 'have' : 'missing'}`,
+    textContent: ing.have ? 'Tengo' : 'Falta',
+    title: 'Pulsa para cambiar',
+    onclick: () => store.setIngredients(day, entry,
+      entry.ingredients.map(i => i.id === ing.id ? { ...i, have: !i.have } : i)),
+  });
+  const del = el('button', {
+    className: 'icon',
+    textContent: '✕',
+    title: 'Quitar ingrediente',
+    onclick: () => store.setIngredients(day, entry, entry.ingredients.filter(i => i.id !== ing.id)),
+  });
+  return el('li', {}, status, el('span', { className: 'name', textContent: ing.name }), del);
 }
 
-function renderShopping() {
-  const view = document.getElementById('view');
-  view.innerHTML = '';
-
-  const h = document.createElement('h2');
-  h.textContent = 'Lista de compra (ingredientes que faltan)';
-  view.append(h);
+function renderShopping(view) {
+  view.append(el('h2', { textContent: 'Lista de compra (ingredientes que faltan)' }));
 
   // Agrupa por nombre de ingrediente (sin distinguir mayúsculas)
   const groups = new Map();
-  DAYS.forEach(day => state.days[day].forEach(entry => entry.ingredients.forEach(ing => {
+  DAYS.forEach(day => days[day].forEach(entry => entry.ingredients.forEach(ing => {
     if (ing.have) return;
     const key = ing.name.toLowerCase();
     if (!groups.has(key)) groups.set(key, { name: ing.name, items: [] });
-    groups.get(key).items.push({ ing, where: `${day.slice(0, 3)} · ${entry.name}` });
+    groups.get(key).items.push({ day, entry, where: `${day.slice(0, 3)} · ${entry.name}` });
   })));
 
   if (!groups.size) {
-    const p = document.createElement('p');
-    p.className = 'empty';
-    p.textContent = '¡No falta nada! Tienes todos los ingredientes.';
-    view.append(p);
+    view.append(el('p', { className: 'empty', textContent: '¡No falta nada! Tienes todos los ingredientes.' }));
   } else {
-    const ul = document.createElement('ul');
-    ul.className = 'ingredients shopping entry';
-    [...groups.values()]
-      .sort((a, b) => a.name.localeCompare(b.name, 'es'))
-      .forEach(g => {
-        const li = document.createElement('li');
-        const btn = document.createElement('button');
-        btn.className = 'status missing';
-        btn.textContent = 'Comprado';
-        btn.title = 'Marcar como que ya lo tienes';
-        btn.onclick = () => { g.items.forEach(i => { i.ing.have = true; }); save(); };
-
-        const text = document.createElement('div');
-        text.className = 'name';
-        const n = document.createElement('div');
-        n.textContent = g.name;
-        const w = document.createElement('div');
-        w.className = 'where';
-        w.textContent = g.items.map(i => i.where).join(', ');
-        text.append(n, w);
-
-        li.append(text, btn);
-        ul.append(li);
+    const ul = el('ul', { className: 'ingredients shopping entry' });
+    [...groups.entries()]
+      .sort(([, a], [, b]) => a.name.localeCompare(b.name, 'es'))
+      .forEach(([key, g]) => {
+        const bought = el('button', {
+          className: 'status missing',
+          textContent: 'Comprado',
+          title: 'Marcar como que ya lo tienes',
+          onclick: () => {
+            const seen = new Set();
+            g.items.forEach(({ day, entry }) => {
+              if (seen.has(entry.id)) return;
+              seen.add(entry.id);
+              store.setIngredients(day, entry, entry.ingredients.map(i =>
+                i.name.toLowerCase() === key ? { ...i, have: true } : i));
+            });
+          },
+        });
+        const text = el('div', { className: 'name' },
+          el('div', { textContent: g.name }),
+          el('div', { className: 'where', textContent: g.items.map(i => i.where).join(', ') }));
+        ul.append(el('li', {}, text, bought));
       });
     view.append(ul);
   }
 
-  const toolbar = document.createElement('div');
-  toolbar.className = 'toolbar';
-  const reset = document.createElement('button');
-  reset.textContent = 'Vaciar menú de la semana';
-  reset.onclick = () => {
-    if (!confirm('¿Borrar todos los platos de la semana?')) return;
-    state = { days: Object.fromEntries(DAYS.map(d => [d, []])) };
-    save();
+  const reset = el('button', {
+    textContent: 'Vaciar menú de la semana',
+    onclick: () => { if (confirm('¿Borrar todos los platos de la semana?')) store.resetWeek(); },
+  });
+  view.append(el('div', { className: 'toolbar' }, reset));
+}
+
+function renderSharing(view) {
+  view.append(
+    el('h2', { textContent: 'Compartir' }),
+    el('p', { className: 'hint', textContent: 'Estas personas pueden ver y editar el menú entrando con su cuenta de Google. Envíales el enlace: ' },
+      el('code', { textContent: location.origin + location.pathname })),
+  );
+
+  const ul = el('ul', { className: 'ingredients members entry' });
+  ul.append(el('li', {}, el('span', { className: 'name', textContent: session.owner }),
+    el('span', { className: 'role', textContent: 'Propietario' })));
+  session.members.forEach(email => ul.append(el('li', {},
+    el('span', { className: 'name', textContent: email }),
+    el('button', {
+      className: 'icon', textContent: '✕', title: 'Quitar acceso',
+      onclick: () => {
+        if (confirm(`¿Quitar el acceso a ${email}?`)) store.setMembers(session.members.filter(m => m !== email));
+      },
+    }))));
+  view.append(ul);
+
+  const form = el('form');
+  form.innerHTML = `
+    <input name="email" type="email" data-focus-key="member" placeholder="Email de Google (p. ej. ana@gmail.com)" autocomplete="off" required>
+    <button type="submit">Dar acceso</button>`;
+  form.onsubmit = ev => {
+    ev.preventDefault();
+    const email = form.email.value.trim().toLowerCase();
+    if (!email || email === session.owner || session.members.includes(email)) return;
+    form.email.value = '';
+    store.setMembers([...session.members, email]);
   };
-  toolbar.append(reset);
-  view.append(toolbar);
+  view.append(form);
 }
 
 function render() {
+  // Conserva el foco y lo escrito: la vista se redibuja también cuando otra persona cambia algo.
+  const active = document.activeElement;
+  const focusKey = active?.dataset?.focusKey;
+  const typed = active?.value;
+
+  renderAccount();
   renderTabs();
-  if (current === SHOPPING) renderShopping();
-  else renderDay(current);
+  const view = document.getElementById('view');
+  view.innerHTML = '';
+  if (errorMessage) view.append(el('p', { className: 'error', textContent: errorMessage }));
+
+  if (session && session.status !== 'ready') renderGate(view);
+  else if (current === SHOPPING) renderShopping(view);
+  else if (current === SHARING && isOwner()) renderSharing(view);
+  else renderDay(view, DAYS.includes(current) ? current : (current = DAYS[0]));
+
+  if (focusKey) {
+    const target = view.querySelector(`[data-focus-key="${focusKey}"]`);
+    if (target) { target.value = typed ?? ''; target.focus(); }
+  }
 }
 
-render();
+if (firebaseConfig) {
+  render();
+  try {
+    const { createFirebaseStore } = await import('./firebase-store.js');
+    store = await createFirebaseStore(firebaseConfig, DAYS, handlers);
+  } catch (err) {
+    console.error(err);
+    document.getElementById('view').textContent = 'No se pudo conectar. Comprueba tu conexión a internet y recarga la página.';
+  }
+} else {
+  store = createLocalStore(DAYS, handlers);
+}

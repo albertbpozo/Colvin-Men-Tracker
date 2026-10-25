@@ -1,0 +1,37 @@
+rules_version = '2';
+
+// Reglas de seguridad de Firestore. Cópialas en
+// Consola de Firebase → Firestore Database → Reglas → Publicar.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Cambia esto por el email de TU cuenta de Google (en minúsculas).
+    // Solo esta cuenta puede crear el menú y decidir quién tiene acceso.
+    function ownerEmail() { return 'TU_EMAIL@gmail.com'; }
+
+    function signedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function email() { return request.auth.token.email.lower(); }
+    function isOwner() { return signedIn() && email() == ownerEmail(); }
+    function isMember(menuId) {
+      return signedIn()
+        && email() in get(/databases/$(database)/documents/menus/$(menuId)).data.members;
+    }
+
+    match /menus/{menuId} {
+      allow read: if isOwner() || isMember(menuId);
+      allow create, update: if isOwner()
+        && request.resource.data.owner == ownerEmail()
+        && request.resource.data.members is list;
+
+      match /entries/{entryId} {
+        allow read, delete: if isOwner() || isMember(menuId);
+        allow create, update: if (isOwner() || isMember(menuId))
+          && request.resource.data.day is string
+          && request.resource.data.name is string
+          && request.resource.data.ingredients is list;
+      }
+    }
+  }
+}

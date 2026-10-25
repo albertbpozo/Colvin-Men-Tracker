@@ -105,3 +105,21 @@ button.icon:hover { color: var(--missing); }
 .shopping li { gap: 12px; }
 .shopping .where { font-size: .8rem; color: var(--muted); }
 .toolbar { display: flex; gap: 8px; justify-content: flex-end; margin-top: 24px; flex-wrap: wrap; }
+
+.title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.title-row h1 { margin: 0; }
+.account { display: flex; align-items: center; gap: 8px; font-size: .8rem; color: var(--muted); min-width: 0; }
+.account .email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
+.account button { padding: 4px 10px; font-size: .8rem; }
+
+.gate { text-align: center; padding: 40px 16px; }
+.gate p { color: var(--muted); }
+.gate button { margin-top: 8px; }
+
+.members li .role { font-size: .8rem; color: var(--muted); }
+.hint { color: var(--muted); font-size: .9rem; }
+.hint code { word-break: break-all; }
+.error {
+  background: var(--missing-bg); color: var(--missing);
+  border-radius: 8px; padding: 8px 12px; margin-bottom: 12px;
+}
