@@ -1,7 +1,7 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=7';
-import { createLocalStore, newIngredientId } from './local-store.js?v=7';
+import { firebaseConfig } from './firebase-config.js?v=9';
+import { createLocalStore, newIngredientId } from './local-store.js?v=9';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
@@ -44,9 +44,78 @@ let errorMessage = '';
 let focusNext = null; // campo que debe recibir el foco tras el próximo redibujado
 let store;
 
+// ---------- Compra en curso: lo marcado como comprado, compartido entre todos ----------
+// Permite ver lo ya comprado y deshacerlo; caduca tras 12 h sin marcar nada.
+const BOUGHT_TTL = 12 * 60 * 60 * 1000;
+let bought = []; // lo más reciente primero
+let pendingUndo = null; // deshacer de platos de otra semana, a la espera de sus datos
+let toastTimer;
+
+const boughtExpired = () => bought.length > 0 && Date.now() - Math.max(...bought.map(r => r.at)) >= BOUGHT_TTL;
+
+function markBought(record) {
+  if (boughtExpired()) store.clearBought();
+  record = { id: newIngredientId(), at: Date.now(), by: session?.email || '', ...record };
+  store.addBought(record);
+  showToast(record);
+}
+
+// Vuelve a poner como «falta» solo los ingredientes que cambió ese «Comprado».
+function restoreMenu(changes) {
+  const byEntry = new Map();
+  changes.forEach(({ day, entryId, ingId }) => {
+    if (!byEntry.has(entryId)) byEntry.set(entryId, { day, ids: new Set() });
+    byEntry.get(entryId).ids.add(ingId);
+  });
+  byEntry.forEach(({ day, ids }, entryId) => {
+    const entry = (days[day] || []).find(e => e.id === entryId);
+    if (entry) store.setIngredients(day, entry, entry.ingredients.map(i => ids.has(i.id) ? { ...i, have: false } : i));
+  });
+}
+
+function undoBought(record) {
+  record = bought.find(r => r.id === record.id);
+  if (!record) return; // ya lo deshizo alguien
+  if (record.source === 'general') {
+    if (!general.some(i => i.id === record.item.id)) store.setGeneral([...general, record.item]);
+  } else if (record.changes.some(c => !week.includes(c.day))) {
+    // Los platos son de otra semana: se va a esa semana y se deshace al recibir sus datos.
+    pendingUndo = record;
+    goToWeek(mondayOf(fromISO(record.changes[0].day)));
+    return;
+  } else {
+    restoreMenu(record.changes);
+  }
+  store.removeBought(record);
+}
+
+function showToast(record) {
+  document.querySelector('.toast')?.remove();
+  clearTimeout(toastTimer);
+  const box = el('div', { className: 'toast', role: 'status' },
+    el('span', { textContent: `${record.name} comprado` }),
+    el('button', { textContent: 'Deshacer', onclick: () => { box.remove(); undoBought(record); } }));
+  document.body.append(box);
+  toastTimer = setTimeout(() => box.remove(), 6000);
+}
+
 const handlers = {
-  onData(data) { days = data; render(); },
+  onData(data) {
+    days = data;
+    if (pendingUndo && pendingUndo.changes.every(c => week.includes(c.day))) {
+      const record = pendingUndo;
+      pendingUndo = null; // antes de restaurar: el cambio vuelve a llamar a onData
+      restoreMenu(record.changes);
+      store.removeBought(record);
+    }
+    render();
+  },
   onGeneral(items) { general = items; render(); },
+  onBought(records) {
+    bought = [...records].sort((a, b) => b.at - a.at);
+    if (boughtExpired()) store.clearBought();
+    render();
+  },
   onStatus(s) { session = s; errorMessage = ''; render(); },
   onError(err) {
     console.error(err);
@@ -281,7 +350,10 @@ function renderShopping(view) {
       });
       const bought = el('button', {
         className: 'status missing', textContent: 'Comprado', title: 'Quitar de la lista',
-        onclick: () => store.setGeneral(general.filter(i => i.id !== item.id)),
+        onclick: () => {
+          store.setGeneral(general.filter(i => i.id !== item.id));
+          markBought({ source: 'general', name: item.name, qty: item.qty || '', where: 'Lista general', item });
+        },
       });
       ul.append(el('li', {}, el('span', { className: 'name', textContent: item.name }), qty, bought));
     });
@@ -310,26 +382,57 @@ function renderShopping(view) {
     [...groups.entries()]
       .sort(([, a], [, b]) => a.name.localeCompare(b.name, 'es'))
       .forEach(([key, g]) => {
+        const qtys = g.items.map(i => i.qty).filter(Boolean);
         const bought = el('button', {
           className: 'status missing',
           textContent: 'Comprado',
           title: 'Marcar como que ya lo tienes',
           onclick: () => {
             const seen = new Set();
+            const changes = [];
             g.items.forEach(({ day, entry }) => {
               if (seen.has(entry.id)) return;
               seen.add(entry.id);
+              entry.ingredients.forEach(i => {
+                if (i.name.toLowerCase() === key && !i.have) changes.push({ day, entryId: entry.id, ingId: i.id });
+              });
               store.setIngredients(day, entry, entry.ingredients.map(i =>
                 i.name.toLowerCase() === key ? { ...i, have: true } : i));
             });
+            const where = [...new Set(g.items.map(i => `${dayShort(i.day)} · ${i.entry.name}`))].join(', ');
+            markBought({ source: 'menu', name: g.name, qty: qtys.join(' + '), where, changes });
           },
         });
-        const qtys = g.items.map(i => i.qty).filter(Boolean);
         const text = el('div', { className: 'name' },
           el('div', {}, g.name, qtys.length ? el('span', { className: 'qty-tag', textContent: qtys.join(' + ') }) : ''),
           el('div', { className: 'where', textContent: g.items.map(i => i.where).join(', ') }));
         ul.append(el('li', {}, text, bought));
       });
+    view.append(ul);
+  }
+
+  // ---- Lo comprado en esta compra (lo ven todos), con deshacer ----
+  if (bought.length && !boughtExpired()) {
+    const finish = el('button', {
+      textContent: 'Terminar compra',
+      onclick: () => {
+        // Doble confirmación: después ya no se puede deshacer lo comprado.
+        if (!confirm(`¿Terminar la compra y vaciar «Ya comprado» (${bought.length})?`)) return;
+        if (!confirm('¿Seguro? Ya no podrás deshacer lo que has marcado como comprado.')) return;
+        store.clearBought();
+      },
+    });
+    view.append(el('div', { className: 'section-head' },
+      el('h2', { textContent: `Ya comprado (${bought.length})` }), finish));
+    const ul = el('ul', { className: 'ingredients shopping entry bought' });
+    bought.forEach(r => ul.append(el('li', {},
+      el('div', { className: 'name' },
+        el('div', {}, r.name, r.qty ? el('span', { className: 'qty-tag', textContent: r.qty }) : ''),
+        el('div', { className: 'where', textContent: r.by && r.by !== session?.email ? `${r.where} · ${r.by}` : r.where })),
+      el('button', {
+        className: 'status have', textContent: 'Deshacer', title: 'Volver a ponerlo en la lista',
+        onclick: () => undoBought(r),
+      }))));
     view.append(ul);
   }
 
@@ -408,7 +511,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=7');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=9');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {

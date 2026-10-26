@@ -7,6 +7,7 @@ App web sencilla para planificar el menú de la semana.
 - En cada día puedes añadir platos (desayuno, comida, merienda o cena).
 - Cada plato tiene su lista de ingredientes, con cantidad opcional; pulsa la etiqueta **Falta / Tengo** para marcar si ya lo tienes y la cantidad para cambiarla.
 - La pestaña **🛒 Lista de compra** tiene una **lista general** (productos sueltos, la misma para todas las semanas) y, debajo, los ingredientes que faltan para el menú de la semana que estás viendo, agrupados. Todo se puede marcar como comprado.
+- Lo que marcas como comprado aparece en **Ya comprado**, compartido con todos, y se puede **Deshacer** si te equivocas. **Terminar compra** vacía esa lista (pide doble confirmación); también se vacía sola tras 12 horas sin comprar nada.
 - Con Firebase configurado, el menú se comparte entre personas y dispositivos: cada uno entra con su cuenta de Google y los cambios se ven al momento. El propietario decide quién tiene acceso en **👥 Compartir**.
 
 ## Modos

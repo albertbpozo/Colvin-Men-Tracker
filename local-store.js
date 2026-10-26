@@ -2,12 +2,13 @@
 const STORAGE_KEY = 'menu-semanal-v2';
 const LEGACY_KEY = 'menu-semanal-v1';
 const GENERAL_KEY = 'menu-semanal-compra';
+const BOUGHT_KEY = 'menu-semanal-comprado';
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 // `byDate` guarda los platos por fecha 'AAAA-MM-DD'. La versión anterior los
 // guardaba por nombre de día ('Lunes'…); `legacyDay` lo traduce a una fecha.
-export function createLocalStore({ onData, onGeneral, legacyDay }) {
+export function createLocalStore({ onData, onGeneral, onBought, legacyDay }) {
   let byDate = {};
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
@@ -24,6 +25,15 @@ export function createLocalStore({ onData, onGeneral, legacyDay }) {
   let general = [];
   try { general = JSON.parse(localStorage.getItem(GENERAL_KEY)) || []; } catch (e) { /* sin datos */ }
   queueMicrotask(() => onGeneral(general));
+
+  let bought = [];
+  try { bought = JSON.parse(localStorage.getItem(BOUGHT_KEY)) || []; } catch (e) { /* sin datos */ }
+  const saveBought = list => {
+    bought = list;
+    try { localStorage.setItem(BOUGHT_KEY, JSON.stringify(bought)); } catch (e) { /* sin persistencia */ }
+    onBought(bought);
+  };
+  queueMicrotask(() => onBought(bought));
 
   let week = [];
   const emit = () => onData(Object.fromEntries(week.map(d => [d, byDate[d] || []])));
@@ -57,6 +67,9 @@ export function createLocalStore({ onData, onGeneral, legacyDay }) {
       try { localStorage.setItem(GENERAL_KEY, JSON.stringify(general)); } catch (e) { /* sin persistencia */ }
       onGeneral(general);
     },
+    addBought(record) { saveBought([...bought, record]); },
+    removeBought(record) { saveBought(bought.filter(r => r.id !== record.id)); },
+    clearBought() { saveBought([]); },
     resetWeek() {
       week.forEach(d => delete byDate[d]);
       commit();
