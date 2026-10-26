@@ -1,7 +1,7 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=9';
-import { createLocalStore, newIngredientId } from './local-store.js?v=9';
+import { firebaseConfig } from './firebase-config.js?v=10';
+import { createLocalStore, newIngredientId } from './local-store.js?v=10';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
@@ -50,6 +50,7 @@ const BOUGHT_TTL = 12 * 60 * 60 * 1000;
 let bought = []; // lo más reciente primero
 let pendingUndo = null; // deshacer de platos de otra semana, a la espera de sus datos
 let toastTimer;
+let photos = {}; // foto de cada producto (data URL), por nombre en minúsculas
 
 const boughtExpired = () => bought.length > 0 && Date.now() - Math.max(...bought.map(r => r.at)) >= BOUGHT_TTL;
 
@@ -116,6 +117,7 @@ const handlers = {
     if (boughtExpired()) store.clearBought();
     render();
   },
+  onPhotos(map) { photos = map; render(); },
   onStatus(s) { session = s; errorMessage = ''; render(); },
   onError(err) {
     console.error(err);
@@ -315,6 +317,66 @@ function ingredientRow(day, entry, ing) {
 
 const withQty = (text, qty) => qty ? `${text} (${qty})` : text;
 
+// ---------- Fotos de los productos de la compra ----------
+// Se guardan por nombre, así la foto de «Leche» sale en todas las listas y semanas.
+const photoKey = name => name.trim().toLowerCase();
+
+// Reduce la foto en el móvil para que quepa en un documento de Firestore (< 1 MB).
+async function shrinkPhoto(file) {
+  const img = await createImageBitmap(file);
+  for (const [max, quality] of [[800, 0.7], [600, 0.6], [400, 0.5]]) {
+    const scale = Math.min(1, max / Math.max(img.width, img.height));
+    const canvas = el('canvas', { width: Math.round(img.width * scale), height: Math.round(img.height * scale) });
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    const url = canvas.toDataURL('image/jpeg', quality);
+    if (url.length < 700000) return url;
+  }
+  throw new Error('Foto demasiado grande');
+}
+
+function pickPhoto(name) {
+  const input = el('input', { type: 'file', accept: 'image/*', hidden: true });
+  input.onchange = async () => {
+    const file = input.files[0];
+    input.remove();
+    if (!file) return;
+    try {
+      store.setPhoto(photoKey(name), name, await shrinkPhoto(file));
+    } catch (err) {
+      handlers.onError(err);
+    }
+  };
+  document.body.append(input);
+  input.click();
+}
+
+function showPhoto(name) {
+  const close = () => box.remove();
+  const box = el('div', { className: 'photo-viewer', onclick: ev => { if (ev.target === box) close(); } },
+    el('div', { className: 'photo-card' },
+      el('img', { src: photos[photoKey(name)], alt: name }),
+      el('div', { className: 'photo-actions' },
+        el('strong', { textContent: name }),
+        el('button', { textContent: 'Cambiar', onclick: () => { close(); pickPhoto(name); } }),
+        el('button', {
+          textContent: 'Quitar', onclick: () => {
+            if (!confirm(`¿Quitar la foto de ${name}?`)) return;
+            close();
+            store.setPhoto(photoKey(name), name, null);
+          },
+        }),
+        el('button', { className: 'primary', textContent: 'Cerrar', onclick: close }))));
+  document.body.append(box);
+}
+
+function photoButton(name) {
+  const url = photos[photoKey(name)];
+  return url
+    ? el('button', { className: 'thumb', title: 'Ver foto', onclick: () => showPhoto(name) },
+      el('img', { src: url, alt: '' }))
+    : el('button', { className: 'thumb empty-thumb', textContent: '📷', title: 'Añadir foto', onclick: () => pickPhoto(name) });
+}
+
 function renderShopping(view) {
   // ---- Lista general: productos sueltos, igual para todas las semanas ----
   view.append(el('h2', { textContent: 'Lista de compra general' }));
@@ -355,7 +417,7 @@ function renderShopping(view) {
           markBought({ source: 'general', name: item.name, qty: item.qty || '', where: 'Lista general', item });
         },
       });
-      ul.append(el('li', {}, el('span', { className: 'name', textContent: item.name }), qty, bought));
+      ul.append(el('li', {}, photoButton(item.name), el('span', { className: 'name', textContent: item.name }), qty, bought));
     });
     view.append(ul);
   }
@@ -406,7 +468,7 @@ function renderShopping(view) {
         const text = el('div', { className: 'name' },
           el('div', {}, g.name, qtys.length ? el('span', { className: 'qty-tag', textContent: qtys.join(' + ') }) : ''),
           el('div', { className: 'where', textContent: g.items.map(i => i.where).join(', ') }));
-        ul.append(el('li', {}, text, bought));
+        ul.append(el('li', {}, photoButton(g.name), text, bought));
       });
     view.append(ul);
   }
@@ -426,6 +488,7 @@ function renderShopping(view) {
       el('h2', { textContent: `Ya comprado (${bought.length})` }), finish));
     const ul = el('ul', { className: 'ingredients shopping entry bought' });
     bought.forEach(r => ul.append(el('li', {},
+      photoButton(r.name),
       el('div', { className: 'name' },
         el('div', {}, r.name, r.qty ? el('span', { className: 'qty-tag', textContent: r.qty }) : ''),
         el('div', { className: 'where', textContent: r.by && r.by !== session?.email ? `${r.where} · ${r.by}` : r.where })),
@@ -511,7 +574,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=9');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=10');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {
