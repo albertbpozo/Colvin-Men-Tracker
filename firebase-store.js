@@ -4,10 +4,16 @@ const MENU_ID = 'principal';
 // La lista de compra general es una entrada con id fijo y day 'general', así
 // queda fuera de las consultas por semana y valen las mismas reglas.
 const GENERAL_ID = 'compra-general';
+// Lo ya comprado en la compra en curso, con el mismo truco (day 'comprado').
+const BOUGHT_ID = 'compra-hecha';
+const BOUGHT_DOC = { day: 'comprado', meal: 'Compra', name: 'Ya comprado', kind: 'bought' };
+// Cada foto de producto es una entrada con day 'foto' (un documento por foto,
+// para no pasar del máximo de 1 MB por documento).
+const PHOTO_DAY = 'foto';
 
 // Los platos se guardan con `day` = fecha 'AAAA-MM-DD'. Las versiones antiguas
 // usaban el nombre del día ('Lunes'…); `legacyDay` lo traduce a una fecha.
-export async function createFirebaseStore(config, { onData, onGeneral, onStatus, onError, legacyDay, legacyNames }) {
+export async function createFirebaseStore(config, { onData, onGeneral, onBought, onPhotos, onStatus, onError, legacyDay, legacyNames }) {
   const [{ initializeApp }, auth, fs] = await Promise.all([
     import(`${SDK}/firebase-app.js`),
     import(`${SDK}/firebase-auth.js`),
@@ -23,6 +29,7 @@ export async function createFirebaseStore(config, { onData, onGeneral, onStatus,
   const menuRef = fs.doc(db, 'menus', MENU_ID);
   const entriesRef = fs.collection(menuRef, 'entries');
   const entryRef = id => fs.doc(entriesRef, id);
+  const photoRef = key => entryRef(`foto-${encodeURIComponent(key).replace(/\./g, '%2E')}`);
   const fail = err => onError(err);
 
   let listeners = [];
@@ -90,6 +97,10 @@ export async function createFirebaseStore(config, { onData, onGeneral, onStatus,
         listenWeek();
         listeners.push(fs.onSnapshot(entryRef(GENERAL_ID),
           snap => onGeneral(snap.exists() ? snap.data().ingredients || [] : []), fail));
+        listeners.push(fs.onSnapshot(entryRef(BOUGHT_ID),
+          snap => onBought(snap.exists() ? snap.data().ingredients || [] : []), fail));
+        listeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', PHOTO_DAY)),
+          snap => onPhotos(Object.fromEntries(snap.docs.map(d => [d.data().key, d.data().photo]))), fail));
         migrateLegacyEntries().catch(fail);
       }
     }, () => onStatus({ status: 'denied', email })));
@@ -124,6 +135,21 @@ export async function createFirebaseStore(config, { onData, onGeneral, onStatus,
       fs.setDoc(entryRef(GENERAL_ID), {
         day: 'general', meal: 'Compra', name: 'Lista de compra general', kind: 'general', ingredients: items,
       }).catch(fail);
+    },
+    // Se añade y quita cada producto por separado para que dos personas
+    // comprando a la vez no se pisen.
+    addBought(record) {
+      fs.setDoc(entryRef(BOUGHT_ID), { ...BOUGHT_DOC, ingredients: fs.arrayUnion(record) }, { merge: true }).catch(fail);
+    },
+    removeBought(record) {
+      fs.updateDoc(entryRef(BOUGHT_ID), { ingredients: fs.arrayRemove(record) }).catch(fail);
+    },
+    clearBought() {
+      fs.setDoc(entryRef(BOUGHT_ID), { ...BOUGHT_DOC, ingredients: [] }).catch(fail);
+    },
+    setPhoto(key, name, photo) {
+      if (photo) fs.setDoc(photoRef(key), { day: PHOTO_DAY, meal: 'Foto', name, kind: 'photo', key, photo, ingredients: [] }).catch(fail);
+      else fs.deleteDoc(photoRef(key)).catch(fail);
     },
     resetWeek() {
       const batch = fs.writeBatch(db);
