@@ -1,7 +1,7 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=10';
-import { createLocalStore, newIngredientId } from './local-store.js?v=10';
+import { firebaseConfig } from './firebase-config.js?v=11';
+import { createLocalStore, newIngredientId } from './local-store.js?v=11';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
@@ -33,10 +33,15 @@ const legacyDay = name => {
   return i < 0 ? undefined : toISO(addDays(mondayOf(new Date()), i));
 };
 
-let week = weekOf(mondayOf(new Date()));
+// Al recargar la página se vuelve a la pestaña (y semana) en la que estabas.
+// Va en sessionStorage: al abrir la app de nuevo se empieza en hoy.
+const TAB_KEY = 'menu-semanal-pestana';
+let current = todayISO();
+try { current = sessionStorage.getItem(TAB_KEY) || current; } catch (e) { /* sin almacenamiento */ }
+const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s);
+let week = weekOf(mondayOf(isDate(current) ? fromISO(current) : new Date()));
 let days = {};
 let general = []; // lista de compra general, la misma para todas las semanas
-let current = todayISO();
 let lastMeal = MEALS[0];
 // En modo local no hay sesión; con Firebase guarda el estado de acceso.
 let session = firebaseConfig ? { status: 'loading' } : null;
@@ -562,6 +567,7 @@ function render() {
   else if (current === SHOPPING) renderShopping(view);
   else if (current === SHARING && isOwner()) renderSharing(view);
   else renderDay(view, week.includes(current) ? current : (current = week[0]));
+  try { sessionStorage.setItem(TAB_KEY, current); } catch (e) { /* sin almacenamiento */ }
 
   const key = focusNext || focusKey;
   if (key) {
@@ -574,7 +580,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=10');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=11');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {
