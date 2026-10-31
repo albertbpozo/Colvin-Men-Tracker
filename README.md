@@ -26,7 +26,7 @@ App web sencilla para planificar el menú de la semana.
 2. **Authentication** → Comenzar → **Sign-in method** → activa **Google**.
    En **Settings → Authorized domains** añade `albertbpozo.github.io`.
 3. **Firestore Database** → Crear base de datos → modo **producción** → ubicación en Europa (p. ej. `eur3`).
-4. En Firestore → **Reglas**, pega el contenido de [`firestore.rules`](firestore.rules), cambia `TU_EMAIL@gmail.com` por el email de tu cuenta de Google (en minúsculas) y pulsa **Publicar**. Esa cuenta es la administradora. (Si actualizas desde una versión anterior, vuelve a pegarlas.)
+4. En Firestore → **Reglas**, pega el contenido de [`firestore.rules`](firestore.rules), comprueba que el email de `adminEmail()` es el de la cuenta de Google administradora (en minúsculas) y pulsa **Publicar**. (Si actualizas desde una versión anterior, vuelve a pegarlas.)
 5. **Configuración del proyecto** (⚙️) → **Tus apps** → icono web `</>` → registra la app (sin Hosting) y copia el objeto `firebaseConfig` en [`firebase-config.js`](firebase-config.js).
 
 La primera vez que el administrador (o alguien autorizado) entra sin tener menú, la app le ofrece **Crear mi menú**. Después, en **👥 Personas** puede añadir los emails de Google de las demás personas. Los menús creados con versiones anteriores siguen siendo de su propietario.

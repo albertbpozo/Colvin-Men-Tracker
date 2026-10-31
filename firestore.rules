@@ -10,9 +10,9 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Cambia esto por el email de TU cuenta de Google (en minúsculas).
+    // Email de la cuenta de Google administradora (en minúsculas).
     // Esta cuenta siempre puede crear menús y decide quién más puede hacerlo.
-    function adminEmail() { return 'TU_EMAIL@gmail.com'; }
+    function adminEmail() { return 'crashingdummies@gmail.com'; }
 
     function signedIn() {
       return request.auth != null && request.auth.token.email_verified == true;
