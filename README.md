@@ -9,6 +9,7 @@ App web sencilla para planificar el menú de la semana.
 - La pestaña **🛒 Lista de compra** tiene una **lista general** (productos sueltos, la misma para todas las semanas) y, debajo, los ingredientes que faltan para el menú de la semana que estás viendo, agrupados. Todo se puede marcar como comprado.
 - Lo que marcas como comprado aparece en **Ya comprado**, compartido con todos, y se puede **Deshacer** si te equivocas. **Terminar compra** vacía esa lista (pide doble confirmación); también se vacía sola tras 12 horas sin comprar nada.
 - Cada producto de la lista de compra puede llevar una **foto** (📷): pulsa la miniatura para verla en grande, cambiarla o quitarla. Va por nombre, así que la foto de «Leche» sale en todas las listas y semanas.
+- La pestaña **✅ Tareas** es una lista de tareas pendientes aparte del menú: añade una tarea, asígnala a una persona (con Firebase, a cualquiera con acceso al menú; en modo local, a cualquier nombre) y márcala como **Hecha**. Se puede cambiar a quién está asignada, filtrar por **Mis tareas** y editar el texto con doble clic. El número de la pestaña son tus tareas pendientes.
 - Con Firebase configurado, el menú se comparte entre personas y dispositivos: cada uno entra con su cuenta de Google y los cambios se ven al momento. El propietario decide quién tiene acceso en **👥 Compartir**.
 
 ## Modos

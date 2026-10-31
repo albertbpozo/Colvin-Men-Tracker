@@ -10,10 +10,13 @@ const BOUGHT_DOC = { day: 'comprado', meal: 'Compra', name: 'Ya comprado', kind:
 // Cada foto de producto es una entrada con day 'foto' (un documento por foto,
 // para no pasar del máximo de 1 MB por documento).
 const PHOTO_DAY = 'foto';
+// Cada tarea pendiente es una entrada con day 'tarea' (un documento por tarea,
+// así dos personas pueden cambiar tareas distintas a la vez sin pisarse).
+const TASK_DAY = 'tarea';
 
 // Los platos se guardan con `day` = fecha 'AAAA-MM-DD'. Las versiones antiguas
 // usaban el nombre del día ('Lunes'…); `legacyDay` lo traduce a una fecha.
-export async function createFirebaseStore(config, { onData, onGeneral, onBought, onPhotos, onStatus, onError, legacyDay, legacyNames }) {
+export async function createFirebaseStore(config, { onData, onGeneral, onBought, onPhotos, onTasks, onStatus, onError, legacyDay, legacyNames }) {
   const [{ initializeApp }, auth, fs] = await Promise.all([
     import(`${SDK}/firebase-app.js`),
     import(`${SDK}/firebase-auth.js`),
@@ -101,6 +104,8 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
           snap => onBought(snap.exists() ? snap.data().ingredients || [] : []), fail));
         listeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', PHOTO_DAY)),
           snap => onPhotos(Object.fromEntries(snap.docs.map(d => [d.data().key, d.data().photo]))), fail));
+        listeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', TASK_DAY)),
+          snap => onTasks(snap.docs.map(d => ({ id: d.id, ...d.data() }))), fail));
         migrateLegacyEntries().catch(fail);
       }
     }, () => onStatus({ status: 'denied', email })));
@@ -150,6 +155,15 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     setPhoto(key, name, photo) {
       if (photo) fs.setDoc(photoRef(key), { day: PHOTO_DAY, meal: 'Foto', name, kind: 'photo', key, photo, ingredients: [] }).catch(fail);
       else fs.deleteDoc(photoRef(key)).catch(fail);
+    },
+    addTask(task) {
+      fs.addDoc(entriesRef, { day: TASK_DAY, meal: 'Tarea', kind: 'task', ingredients: [], ...task }).catch(fail);
+    },
+    updateTask(id, changes) {
+      fs.updateDoc(entryRef(id), changes).catch(fail);
+    },
+    deleteTask(id) {
+      fs.deleteDoc(entryRef(id)).catch(fail);
     },
     resetWeek() {
       const batch = fs.writeBatch(db);

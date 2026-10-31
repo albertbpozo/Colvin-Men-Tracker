@@ -1,12 +1,13 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=11';
-import { createLocalStore, newIngredientId } from './local-store.js?v=11';
+import { firebaseConfig } from './firebase-config.js?v=12';
+import { createLocalStore, newIngredientId } from './local-store.js?v=12';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
 const SHOPPING = 'compra';
 const SHARING = 'compartir';
+const TASKS = 'tareas';
 
 // ---------- Fechas (siempre en hora local, como 'AAAA-MM-DD') ----------
 
@@ -43,6 +44,7 @@ let week = weekOf(mondayOf(isDate(current) ? fromISO(current) : new Date()));
 let days = {};
 let general = []; // lista de compra general, la misma para todas las semanas
 let lastMeal = MEALS[0];
+let lastAssignee = ''; // a quién se asignó la última tarea añadida
 // En modo local no hay sesión; con Firebase guarda el estado de acceso.
 let session = firebaseConfig ? { status: 'loading' } : null;
 let errorMessage = '';
@@ -56,6 +58,8 @@ let bought = []; // lo más reciente primero
 let pendingUndo = null; // deshacer de platos de otra semana, a la espera de sus datos
 let toastTimer;
 let photos = {}; // foto de cada producto (data URL), por nombre en minúsculas
+let tasks = []; // lista de tareas pendientes, independiente del menú
+let taskFilter = 'all'; // 'all' | 'mine'
 
 const boughtExpired = () => bought.length > 0 && Date.now() - Math.max(...bought.map(r => r.at)) >= BOUGHT_TTL;
 
@@ -123,6 +127,7 @@ const handlers = {
     render();
   },
   onPhotos(map) { photos = map; render(); },
+  onTasks(list) { tasks = list; render(); },
   onStatus(s) { session = s; errorMessage = ''; render(); },
   onError(err) {
     console.error(err);
@@ -210,6 +215,7 @@ function renderTabs() {
   week.forEach(d => make(d, dayShort(d), missingCount(days[d]), d === todayISO()));
   const totalMissing = general.length + week.reduce((n, d) => n + missingCount(days[d]), 0);
   make(SHOPPING, '🛒 Lista de compra', totalMissing);
+  make(TASKS, '✅ Tareas', myPendingTasks().length);
   if (isOwner()) make(SHARING, '👥 Compartir');
 }
 
@@ -516,6 +522,112 @@ function renderShopping(view) {
   view.append(el('div', { className: 'toolbar' }, reset));
 }
 
+// ---------- Tareas pendientes: lista aparte, cada tarea asignable a una persona ----------
+
+// Con Firebase se asigna a las personas con acceso; en modo local, a cualquier nombre.
+const taskPeople = () => session?.status === 'ready'
+  ? [session.owner, ...session.members]
+  : [...new Set(tasks.map(t => t.assignee).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+const personLabel = p => !p ? 'Sin asignar' : p === session?.email ? `${p} (yo)` : p;
+// En el contador de la pestaña: las mías si hay sesión; si no, todas las pendientes.
+const myPendingTasks = () => tasks.filter(t => !t.done && (!session?.email || t.assignee === session.email));
+
+function assigneePicker(value, onPick, focusKey) {
+  if (session) {
+    const people = taskPeople();
+    if (value && !people.includes(value)) people.push(value); // alguien que ya no tiene acceso
+    const select = el('select', { className: 'assignee', title: 'Asignar a' },
+      el('option', { value: '', textContent: 'Sin asignar' }),
+      ...people.map(p => el('option', { value: p, textContent: personLabel(p), selected: p === value })));
+    select.onchange = () => onPick(select.value);
+    return select;
+  }
+  const input = el('input', { className: 'assignee', value: value || '', placeholder: 'Asignar a…', autocomplete: 'off' });
+  input.setAttribute('list', 'task-people');
+  if (focusKey) input.dataset.focusKey = focusKey;
+  input.onchange = () => onPick(input.value.trim());
+  return input;
+}
+
+function taskRow(task) {
+  const status = el('button', {
+    className: `status ${task.done ? 'have' : 'missing'}`,
+    textContent: task.done ? 'Hecha' : 'Pendiente',
+    title: 'Pulsa para cambiar',
+    onclick: () => store.updateTask(task.id, { done: !task.done, doneAt: task.done ? null : Date.now() }),
+  });
+  const del = el('button', {
+    className: 'icon', textContent: '✕', title: 'Eliminar tarea',
+    onclick: () => { if (confirm(`¿Eliminar la tarea «${task.name}»?`)) store.deleteTask(task.id); },
+  });
+  const by = task.by && task.by !== task.assignee ? `Creada por ${task.by}` : '';
+  const text = el('div', { className: 'name' },
+    el('div', { textContent: task.name, ondblclick: () => {
+      const value = prompt('Tarea:', task.name);
+      if (value && value.trim()) store.updateTask(task.id, { name: value.trim() });
+    } }),
+    by ? el('div', { className: 'where', textContent: by }) : '');
+  const picker = assigneePicker(task.assignee, assignee => store.updateTask(task.id, { assignee }));
+  return el('li', { className: task.done ? 'done' : '' }, status, text, picker, del);
+}
+
+function renderTasks(view) {
+  view.append(el('h2', { textContent: 'Tareas pendientes' }));
+  if (!session) {
+    view.append(el('datalist', { id: 'task-people' }, ...taskPeople().map(p => el('option', { value: p }))));
+  }
+
+  const form = el('form', { className: 'add-task' });
+  form.append(
+    el('input', { name: 'task', placeholder: 'Nueva tarea (p. ej. Sacar la basura)', autocomplete: 'off', required: true }),
+    assigneePicker(lastAssignee, a => { lastAssignee = a; }, 'task-assignee'),
+    el('button', { type: 'submit', textContent: 'Añadir' }));
+  form.task.dataset.focusKey = 'task';
+  form.onsubmit = ev => {
+    ev.preventDefault();
+    const name = form.task.value.trim();
+    if (!name) return;
+    const assignee = (form.querySelector('.assignee').value || '').trim();
+    lastAssignee = assignee;
+    form.task.value = '';
+    focusNext = 'task';
+    store.addTask({ name, assignee, done: false, createdAt: Date.now(), by: session?.email || '' });
+  };
+  view.append(form);
+
+  if (session?.email) {
+    const filters = el('div', { className: 'filters' });
+    [['all', 'Todas'], ['mine', 'Mis tareas']].forEach(([key, label]) => {
+      const b = el('button', { textContent: label, onclick: () => { taskFilter = key; render(); } });
+      b.setAttribute('aria-pressed', String(taskFilter === key));
+      filters.append(b);
+    });
+    view.append(filters);
+  }
+
+  const visible = tasks.filter(t => taskFilter !== 'mine' || !session?.email || t.assignee === session.email);
+  const pending = visible.filter(t => !t.done).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  const done = visible.filter(t => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+
+  if (!pending.length) {
+    view.append(el('p', { className: 'empty', textContent: taskFilter === 'mine' ? 'No tienes tareas pendientes.' : 'No hay tareas pendientes.' }));
+  } else {
+    view.append(el('ul', { className: 'ingredients tasks entry' }, ...pending.map(taskRow)));
+  }
+
+  if (done.length) {
+    const clear = el('button', {
+      textContent: 'Borrar hechas',
+      onclick: () => {
+        if (confirm(`¿Borrar las ${done.length} tareas hechas?`)) done.forEach(t => store.deleteTask(t.id));
+      },
+    });
+    view.append(
+      el('div', { className: 'section-head' }, el('h2', { textContent: `Hechas (${done.length})` }), clear),
+      el('ul', { className: 'ingredients tasks entry' }, ...done.map(taskRow)));
+  }
+}
+
 function renderSharing(view) {
   view.append(
     el('h2', { textContent: 'Compartir' }),
@@ -566,6 +678,7 @@ function render() {
   if (session && session.status !== 'ready') renderGate(view);
   else if (current === SHOPPING) renderShopping(view);
   else if (current === SHARING && isOwner()) renderSharing(view);
+  else if (current === TASKS) renderTasks(view);
   else renderDay(view, week.includes(current) ? current : (current = week[0]));
   try { sessionStorage.setItem(TAB_KEY, current); } catch (e) { /* sin almacenamiento */ }
 
@@ -580,7 +693,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=11');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=12');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {
