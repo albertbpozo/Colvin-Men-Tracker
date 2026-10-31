@@ -4,6 +4,7 @@ const LEGACY_KEY = 'menu-semanal-v1';
 const GENERAL_KEY = 'menu-semanal-compra';
 const BOUGHT_KEY = 'menu-semanal-comprado';
 const PHOTOS_KEY = 'menu-semanal-fotos';
+const PHOTOS_USED_KEY = 'menu-semanal-fotos-uso';
 const TASKS_KEY = 'menu-semanal-tareas';
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -39,7 +40,12 @@ export function createLocalStore({ onData, onGeneral, onBought, onPhotos, onTask
 
   let photos = {};
   try { photos = JSON.parse(localStorage.getItem(PHOTOS_KEY)) || {}; } catch (e) { /* sin datos */ }
-  queueMicrotask(() => onPhotos(photos));
+  let photosUsed = {}; // última vez que se usó cada producto con foto
+  try { photosUsed = JSON.parse(localStorage.getItem(PHOTOS_USED_KEY)) || {}; } catch (e) { /* sin datos */ }
+  const saveUsed = () => {
+    try { localStorage.setItem(PHOTOS_USED_KEY, JSON.stringify(photosUsed)); } catch (e) { /* sin persistencia */ }
+  };
+  queueMicrotask(() => onPhotos(photos, photosUsed, false));
 
   let tasks = [];
   try { tasks = JSON.parse(localStorage.getItem(TASKS_KEY)) || []; } catch (e) { /* sin datos */ }
@@ -87,10 +93,18 @@ export function createLocalStore({ onData, onGeneral, onBought, onPhotos, onTask
     clearBought() { saveBought([]); },
     setPhoto(key, name, photo) {
       photos = { ...photos };
-      if (photo) photos[key] = photo;
-      else delete photos[key];
+      photosUsed = { ...photosUsed };
+      if (photo) { photos[key] = photo; photosUsed[key] = Date.now(); }
+      else { delete photos[key]; delete photosUsed[key]; }
       try { localStorage.setItem(PHOTOS_KEY, JSON.stringify(photos)); } catch (e) { /* sin espacio: solo esta sesión */ }
-      onPhotos(photos);
+      saveUsed();
+      onPhotos(photos, photosUsed, false);
+    },
+    touchPhotos(keys) {
+      photosUsed = { ...photosUsed };
+      keys.forEach(key => { photosUsed[key] = Date.now(); });
+      saveUsed();
+      onPhotos(photos, photosUsed, false);
     },
     addTask(task) { saveTasks([...tasks, { id: uid(), ...task }]); },
     updateTask(id, changes) { saveTasks(tasks.map(t => t.id === id ? { ...t, ...changes } : t)); },

@@ -113,7 +113,11 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     menuListeners.push(fs.onSnapshot(entryRef(BOUGHT_ID),
       snap => onBought(snap.exists() ? snap.data().ingredients || [] : []), fail));
     menuListeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', PHOTO_DAY)),
-      snap => onPhotos(Object.fromEntries(snap.docs.map(d => [d.data().key, d.data().photo]))), fail));
+      { includeMetadataChanges: true },
+      snap => onPhotos(
+        Object.fromEntries(snap.docs.map(d => [d.data().key, d.data().photo])),
+        Object.fromEntries(snap.docs.map(d => [d.data().key, d.data().lastUsed || 0])),
+        snap.metadata.fromCache), fail));
     menuListeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', TASK_DAY)),
       snap => onTasks(snap.docs.map(d => ({ id: d.id, ...d.data() }))), fail));
     migrateLegacyEntries(entriesRef).catch(fail);
@@ -229,8 +233,14 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
       fs.setDoc(entryRef(BOUGHT_ID), { ...BOUGHT_DOC, ingredients: [] }).catch(fail);
     },
     setPhoto(key, name, photo) {
-      if (photo) fs.setDoc(photoRef(key), { day: PHOTO_DAY, meal: 'Foto', name, kind: 'photo', key, photo, ingredients: [] }).catch(fail);
+      if (photo) fs.setDoc(photoRef(key), { day: PHOTO_DAY, meal: 'Foto', name, kind: 'photo', key, photo, ingredients: [], lastUsed: Date.now() }).catch(fail);
       else fs.deleteDoc(photoRef(key)).catch(fail);
+    },
+    // Apunta que estos productos se han usado ahora (para no borrar sus fotos).
+    touchPhotos(keys) {
+      const batch = fs.writeBatch(db);
+      keys.forEach(key => batch.update(photoRef(key), { lastUsed: Date.now() }));
+      batch.commit().catch(fail);
     },
     addTask(task) {
       fs.addDoc(entriesRef, { day: TASK_DAY, meal: 'Tarea', kind: 'task', ingredients: [], ...task }).catch(fail);

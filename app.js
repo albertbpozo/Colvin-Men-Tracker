@@ -1,7 +1,7 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=14';
-import { createLocalStore, newIngredientId } from './local-store.js?v=14';
+import { firebaseConfig } from './firebase-config.js?v=15';
+import { createLocalStore, newIngredientId } from './local-store.js?v=15';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
@@ -58,6 +58,7 @@ let bought = []; // lo más reciente primero
 let pendingUndo = null; // deshacer de platos de otra semana, a la espera de sus datos
 let toastTimer;
 let photos = {}; // foto de cada producto (data URL), por nombre en minúsculas
+let photosUsed = {}; // última vez que apareció cada producto con foto (ms)
 let tasks = []; // lista de tareas pendientes, independiente del menú
 // Quién puede crear menús: lo decide el administrador (ver firestore.rules).
 let creators = { admin: false, canCreate: false, list: [] };
@@ -121,20 +122,29 @@ const handlers = {
       store.removeBought(record);
     }
     render();
+    touchPhotos();
   },
-  onGeneral(items) { general = items; render(); },
+  onGeneral(items) { general = items; render(); touchPhotos(); },
   onBought(records) {
     bought = [...records].sort((a, b) => b.at - a.at);
     if (boughtExpired()) store.clearBought();
     render();
+    touchPhotos();
   },
-  onPhotos(map) { photos = map; render(); },
+  onPhotos(map, used, fromCache) {
+    photos = map;
+    photosUsed = used;
+    render();
+    touchPhotos();
+    if (!fromCache) cleanPhotos();
+  },
   onTasks(list) { tasks = list; render(); },
   onCreators(c) { creators = c; render(); },
   onStatus(s) {
     if (s.menuId !== session?.menuId) {
       // Otro menú (o ninguno): fuera los datos del anterior hasta que lleguen los nuevos.
-      days = {}; general = []; bought = []; photos = {}; tasks = []; pendingUndo = null;
+      days = {}; general = []; bought = []; photos = {}; photosUsed = {}; tasks = []; pendingUndo = null;
+      clearTimeout(cleanTimer);
     }
     if (s.status !== session?.status) errorMessage = '';
     session = s;
@@ -389,6 +399,52 @@ async function shrinkPhoto(file) {
     if (url.length < 700000) return url;
   }
   throw new Error('Foto demasiado grande');
+}
+
+// ---------- Limpieza: fotos que llevan un mes sin usarse ----------
+// Un producto «se usa» si aparece en la lista general, en «Ya comprado» o en
+// algún plato de la semana que se está viendo. No hay servidor: la limpieza la
+// hace la app al abrirse, como mucho una vez al día en cada dispositivo.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const PHOTO_MAX_IDLE = 30 * DAY_MS;
+const CLEAN_KEY = 'menu-semanal-limpieza-fotos';
+
+const photosInUse = () => new Set([
+  ...general.map(i => i.name),
+  ...bought.map(r => r.name),
+  ...week.flatMap(d => (days[d] || []).flatMap(e => e.ingredients.map(i => i.name))),
+].map(photoKey));
+
+function touchPhotos() {
+  if (!Object.keys(photos).length) return;
+  // Se apunta como mucho una vez al día por foto, para no gastar escrituras.
+  const stale = [...photosInUse()].filter(k => photos[k] && Date.now() - (photosUsed[k] || 0) > DAY_MS);
+  if (stale.length) store.touchPhotos(stale);
+}
+
+let cleanTimer;
+// Espera a que lleguen también las listas y el menú antes de decidir nada.
+function cleanPhotos() {
+  clearTimeout(cleanTimer);
+  cleanTimer = setTimeout(cleanNow, 15000);
+}
+
+function cleanNow() {
+  const scope = session?.menuId || 'local';
+  if (session && session.status !== 'ready') return;
+  let last = {};
+  try { last = JSON.parse(localStorage.getItem(CLEAN_KEY)) || {}; } catch (e) { /* sin datos */ }
+  if (Date.now() - (last[scope] || 0) < DAY_MS) return;
+  last[scope] = Date.now();
+  try { localStorage.setItem(CLEAN_KEY, JSON.stringify(last)); } catch (e) { /* sin persistencia */ }
+
+  const keys = Object.keys(photos);
+  // Fotos de antes de esta función, sin fecha: empiezan a contar desde hoy.
+  const undated = keys.filter(k => !photosUsed[k]);
+  if (undated.length) store.touchPhotos(undated);
+  const inUse = photosInUse();
+  keys.filter(k => photosUsed[k] && !inUse.has(k) && Date.now() - photosUsed[k] > PHOTO_MAX_IDLE)
+    .forEach(k => store.setPhoto(k, k, null));
 }
 
 function pickPhoto(name) {
@@ -822,7 +878,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=14');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=15');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {
