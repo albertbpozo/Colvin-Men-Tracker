@@ -1,6 +1,8 @@
-// Menú compartido en Firestore con inicio de sesión de Google.
+// Menús compartidos en Firestore con inicio de sesión de Google. Cada menú
+// (menus/{id}) tiene su propietario, las personas con acceso y sus alias.
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2';
-const MENU_ID = 'principal';
+// Último menú abierto en este dispositivo, para volver a él al entrar.
+const MENU_KEY = 'menu-semanal-menu';
 // La lista de compra general es una entrada con id fijo y day 'general', así
 // queda fuera de las consultas por semana y valen las mismas reglas.
 const GENERAL_ID = 'compra-general';
@@ -29,30 +31,52 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     // Caché local: la app sigue funcionando sin cobertura y sincroniza al volver.
     localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
   });
-  const menuRef = fs.doc(db, 'menus', MENU_ID);
-  const entriesRef = fs.collection(menuRef, 'entries');
-  const entryRef = id => fs.doc(entriesRef, id);
-  const photoRef = key => entryRef(`foto-${encodeURIComponent(key).replace(/\./g, '%2E')}`);
+  const menusRef = fs.collection(db, 'menus');
   const fail = err => onError(err);
 
-  let listeners = [];
+  // Menú abierto: todo lo demás (platos, compra, fotos, tareas) cuelga de él.
+  let menuId = null;
+  let menuRef = null;
+  let entriesRef = null;
+  const entryRef = id => fs.doc(entriesRef, id);
+  const photoRef = key => entryRef(`foto-${encodeURIComponent(key).replace(/\./g, '%2E')}`);
+
+  let email = null;
+  let wanted = null; // menú que se quiere abrir (el último usado o el recién creado)
+  try { wanted = localStorage.getItem(MENU_KEY); } catch (e) { /* sin almacenamiento */ }
+  // Menús en los que soy propietario y en los que soy miembro (dos consultas).
+  let found = { owned: new Map(), shared: new Map() };
+  // Menús recién creados que el servidor aún no ha confirmado: hasta entonces
+  // las reglas no los ven y leer sus datos daría «sin permiso».
+  let unconfirmed = new Set();
+  let synced = { owned: false, shared: false };
+  let menuListeners = [];
+  let authListeners = [];
   let stopEntries = null;
-  let ready = false;
   let week = [];
   let entryIds = [];
-  const stopListening = () => {
-    listeners.forEach(stop => stop());
-    listeners = [];
+
+  const stopMenu = () => {
+    menuListeners.forEach(stop => stop());
+    menuListeners = [];
     stopEntries?.();
     stopEntries = null;
-    ready = false;
+    menuId = menuRef = entriesRef = null;
+    entryIds = [];
+  };
+  const stopAll = () => {
+    authListeners.forEach(stop => stop());
+    authListeners = [];
+    stopMenu();
+    found = { owned: new Map(), shared: new Map() };
+    synced = { owned: false, shared: false };
   };
 
   // Escucha solo los platos de la semana visible.
   function listenWeek() {
     stopEntries?.();
     stopEntries = null;
-    if (!ready || !week.length) return;
+    if (!entriesRef || !week.length) return;
     const dates = week;
     const q = fs.query(entriesRef, fs.where('day', '>=', dates[0]), fs.where('day', '<=', dates[dates.length - 1]));
     stopEntries = fs.onSnapshot(q, snap => {
@@ -66,49 +90,79 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     }, fail);
   }
 
-  async function migrateLegacyEntries() {
-    const snap = await fs.getDocs(fs.query(entriesRef, fs.where('day', 'in', legacyNames)));
+  async function migrateLegacyEntries(ref) {
+    const snap = await fs.getDocs(fs.query(ref, fs.where('day', 'in', legacyNames)));
     snap.docs.forEach(d => {
       const date = legacyDay(d.data().day);
       if (date) fs.updateDoc(d.ref, { day: date }).catch(fail);
     });
   }
 
+  function openMenu(id) {
+    if (id === menuId) return;
+    stopMenu();
+    menuId = wanted = id;
+    try { localStorage.setItem(MENU_KEY, id); } catch (e) { /* sin almacenamiento */ }
+    menuRef = fs.doc(menusRef, id);
+    entriesRef = fs.collection(menuRef, 'entries');
+    listenWeek();
+    menuListeners.push(fs.onSnapshot(entryRef(GENERAL_ID),
+      snap => onGeneral(snap.exists() ? snap.data().ingredients || [] : []), fail));
+    menuListeners.push(fs.onSnapshot(entryRef(BOUGHT_ID),
+      snap => onBought(snap.exists() ? snap.data().ingredients || [] : []), fail));
+    menuListeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', PHOTO_DAY)),
+      snap => onPhotos(Object.fromEntries(snap.docs.map(d => [d.data().key, d.data().photo]))), fail));
+    menuListeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', TASK_DAY)),
+      snap => onTasks(snap.docs.map(d => ({ id: d.id, ...d.data() }))), fail));
+    migrateLegacyEntries(entriesRef).catch(fail);
+  }
+
+  // Decide qué menú abrir con lo que devuelven las consultas y avisa a la app.
+  function update() {
+    const all = new Map([...found.shared, ...found.owned]);
+    if (!all.size) {
+      // Sin menús: solo lo damos por bueno cuando lo confirma el servidor.
+      if (!synced.owned || !synced.shared) return onStatus({ status: 'loading', email });
+      stopMenu();
+      return onStatus({ status: 'no-menu', email });
+    }
+    const menus = [...all].map(([id, m]) => ({ id, name: m.name || '', owner: m.owner, aliases: m.aliases || {} }))
+      .sort((a, b) => (b.owner === email) - (a.owner === email) || a.id.localeCompare(b.id));
+    const id = all.has(wanted) ? wanted : all.has(menuId) ? menuId : menus[0].id;
+    // Antes de abrir el menú: la app vacía los datos del anterior al ver otro menuId.
+    const menu = all.get(id);
+    onStatus({
+      status: 'ready', email, menuId: id, menus,
+      name: menu.name || '', owner: menu.owner, members: menu.members || [], aliases: menu.aliases || {},
+    });
+    if (id === menuId || !unconfirmed.has(id)) openMenu(id);
+    else stopMenu(); // se abre al confirmarse (llega otra instantánea)
+  }
+
+  function watchMenus(key, q) {
+    authListeners.push(fs.onSnapshot(q, { includeMetadataChanges: true }, snap => {
+      found[key] = new Map(snap.docs.map(d => [d.id, d.data()]));
+      if (key === 'owned') unconfirmed = new Set(snap.docs.filter(d => d.metadata.hasPendingWrites).map(d => d.id));
+      if (!snap.metadata.fromCache) synced[key] = true;
+      update();
+    }, err => {
+      found[key] = new Map();
+      synced[key] = true;
+      onError(Object.assign(err, { during: 'menus' }));
+      update();
+    }));
+  }
+
   auth.onAuthStateChanged(authInstance, user => {
-    stopListening();
-    if (!user) return onStatus({ status: 'signed-out' });
-
-    const email = user.email.toLowerCase();
+    stopAll();
+    if (!user) {
+      email = null;
+      return onStatus({ status: 'signed-out' });
+    }
+    email = user.email.toLowerCase();
     onStatus({ status: 'loading', email });
-
-    listeners.push(fs.onSnapshot(menuRef, { includeMetadataChanges: true }, async snap => {
-      if (!snap.exists()) {
-        // Solo creamos el menú cuando el servidor confirma que no existe;
-        // las reglas solo dejan crearlo al propietario.
-        if (snap.metadata.fromCache) return;
-        try {
-          await fs.setDoc(menuRef, { owner: email, members: [] });
-        } catch (e) {
-          onStatus({ status: 'denied', email });
-        }
-        return;
-      }
-      const menu = snap.data();
-      onStatus({ status: 'ready', email, owner: menu.owner, members: menu.members || [] });
-      if (!ready) {
-        ready = true;
-        listenWeek();
-        listeners.push(fs.onSnapshot(entryRef(GENERAL_ID),
-          snap => onGeneral(snap.exists() ? snap.data().ingredients || [] : []), fail));
-        listeners.push(fs.onSnapshot(entryRef(BOUGHT_ID),
-          snap => onBought(snap.exists() ? snap.data().ingredients || [] : []), fail));
-        listeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', PHOTO_DAY)),
-          snap => onPhotos(Object.fromEntries(snap.docs.map(d => [d.data().key, d.data().photo]))), fail));
-        listeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', TASK_DAY)),
-          snap => onTasks(snap.docs.map(d => ({ id: d.id, ...d.data() }))), fail));
-        migrateLegacyEntries().catch(fail);
-      }
-    }, () => onStatus({ status: 'denied', email })));
+    watchMenus('owned', fs.query(menusRef, fs.where('owner', '==', email)));
+    watchMenus('shared', fs.query(menusRef, fs.where('members', 'array-contains', email)));
   });
 
   return {
@@ -172,6 +226,24 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     },
     setMembers(members) {
       fs.updateDoc(menuRef, { members }).catch(fail);
+    },
+    renameMenu(name) {
+      fs.updateDoc(menuRef, { name }).catch(fail);
+    },
+    // Alias de una persona en el menú abierto; vacío lo quita. Va por campo
+    // (aliases.<email>) para que cada miembro pueda cambiar solo el suyo.
+    setAlias(person, alias) {
+      fs.updateDoc(menuRef, new fs.FieldPath('aliases', person), alias || fs.deleteField()).catch(fail);
+    },
+    selectMenu(id) {
+      wanted = id;
+      update();
+    },
+    createMenu(name, alias) {
+      const ref = fs.doc(menusRef);
+      wanted = ref.id;
+      unconfirmed.add(ref.id);
+      fs.setDoc(ref, { owner: email, members: [], name, aliases: alias ? { [email]: alias } : {} }).catch(fail);
     },
   };
 }

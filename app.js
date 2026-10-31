@@ -1,7 +1,7 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=12';
-import { createLocalStore, newIngredientId } from './local-store.js?v=12';
+import { firebaseConfig } from './firebase-config.js?v=13';
+import { createLocalStore, newIngredientId } from './local-store.js?v=13';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
@@ -128,10 +128,19 @@ const handlers = {
   },
   onPhotos(map) { photos = map; render(); },
   onTasks(list) { tasks = list; render(); },
-  onStatus(s) { session = s; errorMessage = ''; render(); },
+  onStatus(s) {
+    if (s.menuId !== session?.menuId) {
+      // Otro menú (o ninguno): fuera los datos del anterior hasta que lleguen los nuevos.
+      days = {}; general = []; bought = []; photos = {}; tasks = []; pendingUndo = null;
+    }
+    if (s.status !== session?.status) errorMessage = '';
+    session = s;
+    render();
+  },
   onError(err) {
     console.error(err);
     errorMessage = err.during === 'sign-in' ? signInMessage(err)
+      : err.during === 'menus' ? 'No se pudieron cargar tus menús. Si acabas de actualizar la app, publica las reglas nuevas de firestore.rules en Firebase.'
       : err.code === 'permission-denied' ? 'No tienes permiso para hacer este cambio.'
       : 'No se pudo guardar el cambio. Inténtalo de nuevo.';
     render();
@@ -156,6 +165,12 @@ const sortEntries = entries => [...entries].sort((a, b) =>
   MEALS.indexOf(a.meal) - MEALS.indexOf(b.meal) || (a.createdAt || 0) - (b.createdAt || 0));
 
 const isOwner = () => session?.status === 'ready' && session.email === session.owner;
+const ready = () => session?.status === 'ready';
+
+// Alias de una persona en el menú abierto (o su email si no tiene).
+const display = person => session?.aliases?.[person] || person;
+const menuLabel = m => m.name
+  || (m.owner === session?.email ? 'Mi menú' : `Menú de ${m.aliases?.[m.owner] || m.owner}`);
 
 function el(tag, props = {}, ...children) {
   const node = Object.assign(document.createElement(tag), props);
@@ -170,9 +185,19 @@ function renderAccount() {
   box.innerHTML = '';
   if (!session || !session.email) return;
   box.append(
-    el('span', { className: 'email', textContent: session.email }),
+    el('span', { className: 'email', textContent: display(session.email), title: session.email }),
     el('button', { textContent: 'Salir', onclick: () => store.signOut() }),
   );
+}
+
+function renderMenuPicker() {
+  const box = document.getElementById('menu-picker');
+  box.innerHTML = '';
+  if (!ready() || session.menus.length < 2) return;
+  const select = el('select', { title: 'Cambiar de menú' },
+    ...session.menus.map(m => el('option', { value: m.id, textContent: menuLabel(m), selected: m.id === session.menuId })));
+  select.onchange = () => store.selectMenu(select.value);
+  box.append(select);
 }
 
 function goToWeek(monday, selectToday = false) {
@@ -216,7 +241,7 @@ function renderTabs() {
   const totalMissing = general.length + week.reduce((n, d) => n + missingCount(days[d]), 0);
   make(SHOPPING, '🛒 Lista de compra', totalMissing);
   make(TASKS, '✅ Tareas', myPendingTasks().length);
-  if (isOwner()) make(SHARING, '👥 Compartir');
+  if (ready()) make(SHARING, '👥 Personas');
 }
 
 function renderGate(view) {
@@ -226,10 +251,25 @@ function renderGate(view) {
       el('p', { textContent: 'Entra con tu cuenta de Google para ver el menú compartido.' }),
       el('button', { className: 'primary', textContent: 'Entrar con Google', onclick: () => store.signIn() }),
     );
+  } else if (session.status === 'no-menu') {
+    const form = el('form', { className: 'create-menu' },
+      el('input', { name: 'name', placeholder: 'Nombre del menú (p. ej. Casa)', autocomplete: 'off', required: true }),
+      el('button', { type: 'submit', textContent: 'Crear mi menú' }));
+    form.onsubmit = ev => {
+      ev.preventDefault();
+      const name = form.name.value.trim();
+      if (name) store.createMenu(name);
+    };
+    gate.append(
+      el('p', { textContent: `Aún no tienes ningún menú con la cuenta ${session.email}.` }),
+      el('p', { textContent: 'Crea el tuyo, o pide a alguien que te invite con este email desde su pestaña «👥 Personas».' }),
+      form,
+      el('button', { textContent: 'Entrar con otra cuenta', onclick: () => store.signOut() }),
+    );
   } else if (session.status === 'denied') {
     gate.append(
       el('p', { textContent: `La cuenta ${session.email} no tiene acceso a este menú.` }),
-      el('p', { textContent: 'Pide a quien lo creó que añada tu email en «Compartir».' }),
+      el('p', { textContent: 'Pide a quien lo creó que añada tu email en «👥 Personas».' }),
       el('button', { textContent: 'Entrar con otra cuenta', onclick: () => store.signOut() }),
     );
   } else {
@@ -502,7 +542,7 @@ function renderShopping(view) {
       photoButton(r.name),
       el('div', { className: 'name' },
         el('div', {}, r.name, r.qty ? el('span', { className: 'qty-tag', textContent: r.qty }) : ''),
-        el('div', { className: 'where', textContent: r.by && r.by !== session?.email ? `${r.where} · ${r.by}` : r.where })),
+        el('div', { className: 'where', textContent: r.by && r.by !== session?.email ? `${r.where} · ${display(r.by)}` : r.where })),
       el('button', {
         className: 'status have', textContent: 'Deshacer', title: 'Volver a ponerlo en la lista',
         onclick: () => undoBought(r),
@@ -528,7 +568,7 @@ function renderShopping(view) {
 const taskPeople = () => session?.status === 'ready'
   ? [session.owner, ...session.members]
   : [...new Set(tasks.map(t => t.assignee).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
-const personLabel = p => !p ? 'Sin asignar' : p === session?.email ? `${p} (yo)` : p;
+const personLabel = p => !p ? 'Sin asignar' : p === session?.email ? `${display(p)} (yo)` : display(p);
 // En el contador de la pestaña: las mías si hay sesión; si no, todas las pendientes.
 const myPendingTasks = () => tasks.filter(t => !t.done && (!session?.email || t.assignee === session.email));
 
@@ -560,7 +600,7 @@ function taskRow(task) {
     className: 'icon', textContent: '✕', title: 'Eliminar tarea',
     onclick: () => { if (confirm(`¿Eliminar la tarea «${task.name}»?`)) store.deleteTask(task.id); },
   });
-  const by = task.by && task.by !== task.assignee ? `Creada por ${task.by}` : '';
+  const by = task.by && task.by !== task.assignee ? `Creada por ${display(task.by)}` : '';
   const text = el('div', { className: 'name' },
     el('div', { textContent: task.name, ondblclick: () => {
       const value = prompt('Tarea:', task.name);
@@ -628,38 +668,86 @@ function renderTasks(view) {
   }
 }
 
-function renderSharing(view) {
-  view.append(
-    el('h2', { textContent: 'Compartir' }),
-    el('p', { className: 'hint', textContent: 'Estas personas pueden ver y editar el menú entrando con su cuenta de Google. Envíales el enlace: ' },
-      el('code', { textContent: location.origin + location.pathname })),
-  );
+function renderPeople(view) {
+  const owner = isOwner();
+  view.append(el('h2', { textContent: menuLabel(session) }));
+
+  if (owner) {
+    const rename = el('form', { className: 'rename-menu' },
+      el('input', { name: 'name', value: session.name, placeholder: 'Nombre del menú (p. ej. Casa)', autocomplete: 'off' }),
+      el('button', { type: 'submit', textContent: 'Cambiar nombre' }));
+    rename.name.dataset.focusKey = 'menu-name';
+    rename.onsubmit = ev => {
+      ev.preventDefault();
+      const name = rename.name.value.trim();
+      if (name !== session.name) store.renameMenu(name);
+    };
+    view.append(rename,
+      el('p', { className: 'hint', textContent: 'Estas personas pueden ver y editar el menú entrando con su cuenta de Google. Envíales el enlace: ' },
+        el('code', { textContent: location.origin + location.pathname })));
+  } else {
+    view.append(el('p', { className: 'hint', textContent: 'Personas con acceso a este menú. Ponte un alias para que los demás vean tu nombre en lugar de tu correo.' }));
+  }
 
   const ul = el('ul', { className: 'ingredients members entry' });
-  ul.append(el('li', {}, el('span', { className: 'name', textContent: session.owner }),
-    el('span', { className: 'role', textContent: 'Propietario' })));
-  session.members.forEach(email => ul.append(el('li', {},
-    el('span', { className: 'name', textContent: email }),
-    el('button', {
-      className: 'icon', textContent: '✕', title: 'Quitar acceso',
-      onclick: () => {
-        if (confirm(`¿Quitar el acceso a ${email}?`)) store.setMembers(session.members.filter(m => m !== email));
-      },
-    }))));
+  [session.owner, ...session.members].forEach(person => {
+    const alias = session.aliases[person];
+    const role = [person === session.owner ? 'Propietario' : '', person === session.email ? 'tú' : ''].filter(Boolean).join(' · ');
+    const row = el('li', {},
+      el('div', { className: 'name' },
+        el('div', { textContent: alias || person }),
+        alias ? el('div', { className: 'where', textContent: person }) : ''),
+      role ? el('span', { className: 'role', textContent: role }) : '');
+    // El propietario pone alias a todos; cada persona, el suyo.
+    if (owner || person === session.email) {
+      row.append(el('button', {
+        className: alias ? 'qty' : 'qty empty-qty',
+        textContent: alias ? 'Cambiar alias' : '+ alias',
+        title: 'Nombre que se verá en lugar del correo',
+        onclick: () => {
+          const value = prompt(`Alias de ${person} (déjalo vacío para quitarlo):`, alias || '');
+          if (value !== null && value.trim() !== (alias || '')) store.setAlias(person, value.trim().slice(0, 30));
+        },
+      }));
+    }
+    if (owner && person !== session.owner) {
+      row.append(el('button', {
+        className: 'icon', textContent: '✕', title: 'Quitar acceso',
+        onclick: () => {
+          if (confirm(`¿Quitar el acceso a ${display(person)}?`)) store.setMembers(session.members.filter(m => m !== person));
+        },
+      }));
+    }
+    ul.append(row);
+  });
   view.append(ul);
 
-  const form = el('form');
-  form.innerHTML = `
-    <input name="email" type="email" data-focus-key="member" placeholder="Email de Google (p. ej. ana@gmail.com)" autocomplete="off" required>
-    <button type="submit">Dar acceso</button>`;
-  form.onsubmit = ev => {
-    ev.preventDefault();
-    const email = form.email.value.trim().toLowerCase();
-    if (!email || email === session.owner || session.members.includes(email)) return;
-    form.email.value = '';
-    store.setMembers([...session.members, email]);
-  };
-  view.append(form);
+  if (owner) {
+    const form = el('form');
+    form.innerHTML = `
+      <input name="email" type="email" data-focus-key="member" placeholder="Email de Google (p. ej. ana@gmail.com)" autocomplete="off" required>
+      <input name="alias" data-focus-key="member-alias" class="alias-input" placeholder="Alias (opcional)" autocomplete="off" maxlength="30">
+      <button type="submit">Dar acceso</button>`;
+    form.onsubmit = ev => {
+      ev.preventDefault();
+      const email = form.email.value.trim().toLowerCase();
+      const alias = form.alias.value.trim();
+      if (!email || email === session.owner || session.members.includes(email)) return;
+      form.email.value = form.alias.value = '';
+      store.setMembers([...session.members, email]);
+      if (alias) store.setAlias(email, alias);
+    };
+    view.append(form);
+  }
+
+  // Cada persona puede tener sus propios menús y compartirlos con quien quiera.
+  view.append(el('div', { className: 'toolbar' }, el('button', {
+    textContent: '+ Crear otro menú',
+    onclick: () => {
+      const name = prompt('Nombre del nuevo menú (p. ej. Casa de la playa):');
+      if (name && name.trim()) store.createMenu(name.trim(), session.aliases[session.email]);
+    },
+  })));
 }
 
 function render() {
@@ -669,6 +757,7 @@ function render() {
   const typed = active?.value;
 
   renderAccount();
+  renderMenuPicker();
   renderWeekNav();
   renderTabs();
   const view = document.getElementById('view');
@@ -677,7 +766,7 @@ function render() {
 
   if (session && session.status !== 'ready') renderGate(view);
   else if (current === SHOPPING) renderShopping(view);
-  else if (current === SHARING && isOwner()) renderSharing(view);
+  else if (current === SHARING && ready()) renderPeople(view);
   else if (current === TASKS) renderTasks(view);
   else renderDay(view, week.includes(current) ? current : (current = week[0]));
   try { sessionStorage.setItem(TAB_KEY, current); } catch (e) { /* sin almacenamiento */ }
@@ -693,7 +782,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=12');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=13');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {

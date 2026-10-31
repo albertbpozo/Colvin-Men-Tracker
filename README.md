@@ -10,7 +10,9 @@ App web sencilla para planificar el menú de la semana.
 - Lo que marcas como comprado aparece en **Ya comprado**, compartido con todos, y se puede **Deshacer** si te equivocas. **Terminar compra** vacía esa lista (pide doble confirmación); también se vacía sola tras 12 horas sin comprar nada.
 - Cada producto de la lista de compra puede llevar una **foto** (📷): pulsa la miniatura para verla en grande, cambiarla o quitarla. Va por nombre, así que la foto de «Leche» sale en todas las listas y semanas.
 - La pestaña **✅ Tareas** es una lista de tareas pendientes aparte del menú: añade una tarea, asígnala a una persona (con Firebase, a cualquiera con acceso al menú; en modo local, a cualquier nombre) y márcala como **Hecha**. Se puede cambiar a quién está asignada, filtrar por **Mis tareas** y editar el texto con doble clic. El número de la pestaña son tus tareas pendientes.
-- Con Firebase configurado, el menú se comparte entre personas y dispositivos: cada uno entra con su cuenta de Google y los cambios se ven al momento. El propietario decide quién tiene acceso en **👥 Compartir**.
+- Con Firebase configurado, el menú se comparte entre personas y dispositivos: cada uno entra con su cuenta de Google y los cambios se ven al momento.
+- **Varios menús:** cualquiera que entre con Google puede crear su propio menú y compartirlo con quien quiera; cada persona solo ve los menús en los que está. Si estás en varios, cambias de uno a otro con el selector de arriba. Desde **👥 Personas** se crea otro menú.
+- **👥 Personas:** el propietario de cada menú le pone nombre, da o quita acceso por email y puede poner un **alias** a cada persona («Mamá», «Bob»…), que se ve en lugar del correo en toda la app. Cada persona puede cambiar también su propio alias. Los alias van por menú.
 
 ## Modos
 
@@ -23,10 +25,10 @@ App web sencilla para planificar el menú de la semana.
 2. **Authentication** → Comenzar → **Sign-in method** → activa **Google**.
    En **Settings → Authorized domains** añade `albertbpozo.github.io`.
 3. **Firestore Database** → Crear base de datos → modo **producción** → ubicación en Europa (p. ej. `eur3`).
-4. En Firestore → **Reglas**, pega el contenido de [`firestore.rules`](firestore.rules), cambia `TU_EMAIL@gmail.com` por el email de tu cuenta de Google (en minúsculas) y pulsa **Publicar**.
+4. En Firestore → **Reglas**, pega el contenido de [`firestore.rules`](firestore.rules) y pulsa **Publicar**. (Si actualizas desde una versión anterior, vuelve a pegarlas: ya no hace falta poner tu email.)
 5. **Configuración del proyecto** (⚙️) → **Tus apps** → icono web `</>` → registra la app (sin Hosting) y copia el objeto `firebaseConfig` en [`firebase-config.js`](firebase-config.js).
 
-La primera vez que el propietario entra, se crea el menú. Después, en **👥 Compartir** puede añadir los emails de Google de las demás personas.
+La primera vez que alguien entra sin tener menú, la app le ofrece **Crear mi menú**. Después, en **👥 Personas** puede añadir los emails de Google de las demás personas. Los menús creados con versiones anteriores siguen siendo de su propietario.
 
 ## Uso
 

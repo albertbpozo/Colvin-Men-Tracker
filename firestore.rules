@@ -2,32 +2,49 @@ rules_version = '2';
 
 // Reglas de seguridad de Firestore. Cópialas en
 // Consola de Firebase → Firestore Database → Reglas → Publicar.
+//
+// Cada menú (menus/{id}) guarda su propietario (`owner`), las personas con
+// acceso (`members`) y sus alias (`aliases`, por email). Cualquiera que entre
+// con Google puede crear su propio menú y decidir con quién lo comparte.
 service cloud.firestore {
   match /databases/{database}/documents {
-
-    // Cambia esto por el email de TU cuenta de Google (en minúsculas).
-    // Solo esta cuenta puede crear el menú y decidir quién tiene acceso.
-    function ownerEmail() { return 'TU_EMAIL@gmail.com'; }
 
     function signedIn() {
       return request.auth != null && request.auth.token.email_verified == true;
     }
     function email() { return request.auth.token.email.lower(); }
-    function isOwner() { return signedIn() && email() == ownerEmail(); }
-    function isMember(menuId) {
-      return signedIn()
-        && email() in get(/databases/$(database)/documents/menus/$(menuId)).data.members;
+    function menu(menuId) {
+      return get(/databases/$(database)/documents/menus/$(menuId)).data;
+    }
+    function canUse(menuId) {
+      return signedIn() && (email() == menu(menuId).owner || email() in menu(menuId).members);
     }
 
     match /menus/{menuId} {
-      allow read: if isOwner() || isMember(menuId);
-      allow create, update: if isOwner()
-        && request.resource.data.owner == ownerEmail()
+      // Cada persona ve solo los menús de los que es propietaria o miembro.
+      allow read: if signedIn()
+        && (resource.data.owner == email() || email() in resource.data.members);
+
+      // Solo se puede crear un menú a tu nombre.
+      allow create: if signedIn()
+        && request.resource.data.owner == email()
         && request.resource.data.members is list;
 
+      allow update: if signedIn() && (
+        // El propietario lo cambia todo menos el propietario.
+        (resource.data.owner == email()
+          && request.resource.data.owner == resource.data.owner
+          && request.resource.data.members is list)
+        // Los miembros solo pueden cambiar su propio alias.
+        || (email() in resource.data.members
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['aliases'])
+          && request.resource.data.aliases.diff(resource.data.get('aliases', {})).affectedKeys().hasOnly([email()]))
+      );
+
+      // Platos, lista de compra, fotos y tareas del menú.
       match /entries/{entryId} {
-        allow read, delete: if isOwner() || isMember(menuId);
-        allow create, update: if (isOwner() || isMember(menuId))
+        allow read, delete: if canUse(menuId);
+        allow create, update: if canUse(menuId)
           && request.resource.data.day is string
           && request.resource.data.name is string
           && request.resource.data.ingredients is list;
