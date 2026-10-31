@@ -1,7 +1,7 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=13';
-import { createLocalStore, newIngredientId } from './local-store.js?v=13';
+import { firebaseConfig } from './firebase-config.js?v=14';
+import { createLocalStore, newIngredientId } from './local-store.js?v=14';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
@@ -59,6 +59,8 @@ let pendingUndo = null; // deshacer de platos de otra semana, a la espera de sus
 let toastTimer;
 let photos = {}; // foto de cada producto (data URL), por nombre en minúsculas
 let tasks = []; // lista de tareas pendientes, independiente del menú
+// Quién puede crear menús: lo decide el administrador (ver firestore.rules).
+let creators = { admin: false, canCreate: false, list: [] };
 let taskFilter = 'all'; // 'all' | 'mine'
 
 const boughtExpired = () => bought.length > 0 && Date.now() - Math.max(...bought.map(r => r.at)) >= BOUGHT_TTL;
@@ -128,6 +130,7 @@ const handlers = {
   },
   onPhotos(map) { photos = map; render(); },
   onTasks(list) { tasks = list; render(); },
+  onCreators(c) { creators = c; render(); },
   onStatus(s) {
     if (s.menuId !== session?.menuId) {
       // Otro menú (o ninguno): fuera los datos del anterior hasta que lleguen los nuevos.
@@ -260,12 +263,15 @@ function renderGate(view) {
       const name = form.name.value.trim();
       if (name) store.createMenu(name);
     };
-    gate.append(
-      el('p', { textContent: `Aún no tienes ningún menú con la cuenta ${session.email}.` }),
-      el('p', { textContent: 'Crea el tuyo, o pide a alguien que te invite con este email desde su pestaña «👥 Personas».' }),
-      form,
-      el('button', { textContent: 'Entrar con otra cuenta', onclick: () => store.signOut() }),
-    );
+    gate.append(el('p', { textContent: `Aún no tienes ningún menú con la cuenta ${session.email}.` }));
+    if (creators.canCreate) {
+      gate.append(
+        el('p', { textContent: 'Crea el tuyo, o pide a alguien que te invite con este email desde su pestaña «👥 Personas».' }),
+        form);
+    } else {
+      gate.append(el('p', { textContent: 'Pide a alguien que te invite con este email desde su pestaña «👥 Personas», o a quien gestiona la app que te deje crear tu propio menú.' }));
+    }
+    gate.append(el('button', { textContent: 'Entrar con otra cuenta', onclick: () => store.signOut() }));
   } else if (session.status === 'denied') {
     gate.append(
       el('p', { textContent: `La cuenta ${session.email} no tiene acceso a este menú.` }),
@@ -740,14 +746,48 @@ function renderPeople(view) {
     view.append(form);
   }
 
-  // Cada persona puede tener sus propios menús y compartirlos con quien quiera.
-  view.append(el('div', { className: 'toolbar' }, el('button', {
+  if (creators.admin) renderCreators(view);
+
+  // Quien está autorizado puede tener varios menús y compartirlos con quien quiera.
+  if (creators.canCreate) view.append(el('div', { className: 'toolbar' }, el('button', {
     textContent: '+ Crear otro menú',
     onclick: () => {
       const name = prompt('Nombre del nuevo menú (p. ej. Casa de la playa):');
       if (name && name.trim()) store.createMenu(name.trim(), session.aliases[session.email]);
     },
   })));
+}
+
+// Solo el administrador: emails que pueden crear sus propios menús.
+function renderCreators(view) {
+  view.append(
+    el('h2', { className: 'section', textContent: 'Quién puede crear menús' }),
+    el('p', { className: 'hint', textContent: 'Además de ti, solo estas personas pueden crear sus propios menús. Las demás solo entran en los menús a los que las invitan.' }));
+  if (creators.list.length) {
+    view.append(el('ul', { className: 'ingredients members entry' }, ...creators.list.map(person => el('li', {},
+      el('span', { className: 'name', textContent: display(person) === person ? person : `${display(person)} · ${person}` }),
+      el('button', {
+        className: 'icon', textContent: '✕', title: 'Quitar permiso',
+        onclick: () => {
+          if (confirm(`¿Quitar a ${person} el permiso para crear menús? Los menús que ya tenga no se borran.`)) store.setCreator(person, false);
+        },
+      })))));
+  } else {
+    view.append(el('p', { className: 'empty', textContent: 'De momento, solo tú.' }));
+  }
+  const form = el('form');
+  form.innerHTML = `
+    <input name="email" type="email" data-focus-key="creator" placeholder="Email de Google" autocomplete="off" required>
+    <button type="submit">Permitir crear menús</button>`;
+  form.onsubmit = ev => {
+    ev.preventDefault();
+    const email = form.email.value.trim().toLowerCase();
+    if (!email || email === session.email || creators.list.includes(email)) return;
+    form.email.value = '';
+    focusNext = 'creator';
+    store.setCreator(email, true);
+  };
+  view.append(form);
 }
 
 function render() {
@@ -782,7 +822,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=13');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=14');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {

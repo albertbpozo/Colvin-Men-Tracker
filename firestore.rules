@@ -4,10 +4,15 @@ rules_version = '2';
 // Consola de Firebase → Firestore Database → Reglas → Publicar.
 //
 // Cada menú (menus/{id}) guarda su propietario (`owner`), las personas con
-// acceso (`members`) y sus alias (`aliases`, por email). Cualquiera que entre
-// con Google puede crear su propio menú y decidir con quién lo comparte.
+// acceso (`members`) y sus alias (`aliases`, por email). Pueden crear menús
+// el administrador y los emails que él autorice (colección `creadores`); el
+// resto solo entra en los menús a los que le invitan.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // Cambia esto por el email de TU cuenta de Google (en minúsculas).
+    // Esta cuenta siempre puede crear menús y decide quién más puede hacerlo.
+    function adminEmail() { return 'TU_EMAIL@gmail.com'; }
 
     function signedIn() {
       return request.auth != null && request.auth.token.email_verified == true;
@@ -19,14 +24,25 @@ service cloud.firestore {
     function canUse(menuId) {
       return signedIn() && (email() == menu(menuId).owner || email() in menu(menuId).members);
     }
+    function isAdmin() { return signedIn() && email() == adminEmail(); }
+    function canCreateMenus() {
+      return isAdmin() || exists(/databases/$(database)/documents/creadores/$(email()));
+    }
+
+    // Emails que pueden crear menús (un documento por email). Cada persona
+    // puede comprobar si está; solo el administrador ve y cambia la lista.
+    match /creadores/{person} {
+      allow get: if signedIn() && (person == email() || isAdmin());
+      allow list, create, update, delete: if isAdmin();
+    }
 
     match /menus/{menuId} {
       // Cada persona ve solo los menús de los que es propietaria o miembro.
       allow read: if signedIn()
         && (resource.data.owner == email() || email() in resource.data.members);
 
-      // Solo se puede crear un menú a tu nombre.
-      allow create: if signedIn()
+      // Solo quien está autorizado, y siempre a su nombre.
+      allow create: if canCreateMenus()
         && request.resource.data.owner == email()
         && request.resource.data.members is list;
 

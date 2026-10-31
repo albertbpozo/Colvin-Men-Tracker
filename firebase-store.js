@@ -18,7 +18,7 @@ const TASK_DAY = 'tarea';
 
 // Los platos se guardan con `day` = fecha 'AAAA-MM-DD'. Las versiones antiguas
 // usaban el nombre del día ('Lunes'…); `legacyDay` lo traduce a una fecha.
-export async function createFirebaseStore(config, { onData, onGeneral, onBought, onPhotos, onTasks, onStatus, onError, legacyDay, legacyNames }) {
+export async function createFirebaseStore(config, { onData, onGeneral, onBought, onPhotos, onTasks, onStatus, onCreators, onError, legacyDay, legacyNames }) {
   const [{ initializeApp }, auth, fs] = await Promise.all([
     import(`${SDK}/firebase-app.js`),
     import(`${SDK}/firebase-auth.js`),
@@ -32,6 +32,8 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }),
   });
   const menusRef = fs.collection(db, 'menus');
+  // Emails autorizados a crear menús (id del documento = email).
+  const creatorsRef = fs.collection(db, 'creadores');
   const fail = err => onError(err);
 
   // Menú abierto: todo lo demás (platos, compra, fotos, tareas) cuelga de él.
@@ -153,6 +155,25 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     }));
   }
 
+  // ¿Puedo crear menús? ¿Soy el administrador? Solo las reglas lo saben: si
+  // me dejan leer la lista entera soy el administrador; si no, miro si estoy.
+  function watchCreators() {
+    let admin = false;
+    let listed = [];
+    let allowed = false;
+    const emit = () => onCreators({ admin, canCreate: admin || allowed, list: listed });
+    onCreators({ admin: false, canCreate: false, list: [] });
+    authListeners.push(fs.onSnapshot(creatorsRef, { includeMetadataChanges: true }, snap => {
+      if (snap.metadata.fromCache && !admin) return; // hasta que confirme el servidor
+      admin = true;
+      listed = snap.docs.map(d => d.id).sort();
+      emit();
+    }, () => { admin = false; emit(); }));
+    authListeners.push(fs.onSnapshot(fs.doc(creatorsRef, email),
+      snap => { allowed = snap.exists(); emit(); },
+      () => { allowed = false; emit(); }));
+  }
+
   auth.onAuthStateChanged(authInstance, user => {
     stopAll();
     if (!user) {
@@ -163,6 +184,7 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     onStatus({ status: 'loading', email });
     watchMenus('owned', fs.query(menusRef, fs.where('owner', '==', email)));
     watchMenus('shared', fs.query(menusRef, fs.where('members', 'array-contains', email)));
+    watchCreators();
   });
 
   return {
@@ -238,6 +260,10 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     selectMenu(id) {
       wanted = id;
       update();
+    },
+    setCreator(person, allowed) {
+      const ref = fs.doc(creatorsRef, person);
+      (allowed ? fs.setDoc(ref, { email: person, by: email, at: Date.now() }) : fs.deleteDoc(ref)).catch(fail);
     },
     createMenu(name, alias) {
       const ref = fs.doc(menusRef);
