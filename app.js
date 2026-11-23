@@ -1,9 +1,9 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=17';
-import { createLocalStore, newIngredientId } from './local-store.js?v=17';
-import { PRESETS, presetOf, repeatFromDraft, repeatLabel, nextAfter, onOrAfter } from './repeat.js?v=17';
-import { RECIPE_PROMPT, DEFAULT_SERVINGS, scaleQty, parseIngredient, parseRecipes, ingredientLine } from './recipes.js?v=17';
+import { firebaseConfig } from './firebase-config.js?v=18';
+import { createLocalStore, newIngredientId } from './local-store.js?v=18';
+import { PRESETS, presetOf, repeatFromDraft, repeatLabel, nextAfter, onOrAfter } from './repeat.js?v=18';
+import { RECIPE_PROMPT, DEFAULT_SERVINGS, scaleQty, parseIngredient, parseRecipes, ingredientLine } from './recipes.js?v=18';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
@@ -11,6 +11,7 @@ const SHOPPING = 'compra';
 const SHARING = 'compartir';
 const TASKS = 'tareas';
 const RECIPES = 'recetas';
+const SUMMARY = 'resumen';
 
 // ---------- Fechas (siempre en hora local, como 'AAAA-MM-DD') ----------
 
@@ -42,6 +43,13 @@ const legacyDay = name => {
 const TAB_KEY = 'menu-semanal-pestana';
 let current = todayISO();
 try { current = sessionStorage.getItem(TAB_KEY) || current; } catch (e) { /* sin almacenamiento */ }
+// La app instalada se abre con ?tab=… (resumen, o los accesos directos de Android).
+const startTab = new URLSearchParams(location.search).get('tab');
+const TAB_LINKS = { resumen: SUMMARY, compra: SHOPPING, tareas: TASKS, 'mis-tareas': TASKS };
+if (TAB_LINKS[startTab]) {
+  current = TAB_LINKS[startTab];
+  history.replaceState(null, '', location.pathname); // al recargar, la pestaña en la que estés
+}
 const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s);
 let week = weekOf(mondayOf(isDate(current) ? fromISO(current) : new Date()));
 let days = {};
@@ -65,7 +73,7 @@ let photosUsed = {}; // última vez que apareció cada producto con foto (ms)
 let tasks = []; // lista de tareas pendientes, independiente del menú
 // Quién puede crear menús: lo decide el administrador (ver firestore.rules).
 let creators = { admin: false, canCreate: false, list: [] };
-let taskFilter = 'all'; // 'all' | 'mine'
+let taskFilter = startTab === 'mis-tareas' ? 'mine' : 'all'; // 'all' | 'mine'
 // Borradores de tareas (la vista se redibuja cuando otra persona cambia algo).
 const newTaskDraft = () => ({ name: '', preset: 'none', n: 2, unit: 'week', start: todayISO() });
 let taskDraft = null; // formulario de nueva tarea (se crea al abrir la pestaña)
@@ -270,6 +278,7 @@ function renderTabs() {
     if (badge) b.append(el('span', { className: 'badge', textContent: badge }));
     tabs.append(b);
   };
+  make(SUMMARY, '🏠 Resumen');
   week.forEach(d => make(d, dayShort(d), missingCount(days[d]), d === todayISO()));
   const totalMissing = general.length + week.reduce((n, d) => n + missingCount(days[d]), 0);
   make(SHOPPING, '🛒 Lista de compra', totalMissing);
@@ -511,6 +520,45 @@ function photoButton(name) {
     : el('button', { className: 'thumb empty-thumb', textContent: '📷', title: 'Añadir foto', onclick: () => pickPhoto(name) });
 }
 
+// ---------- Comprar (lo usan la lista de compra y el resumen) ----------
+
+function buyGeneral(item) {
+  store.setGeneral(general.filter(i => i.id !== item.id));
+  markBought({ source: 'general', name: item.name, qty: item.qty || '', where: 'Lista general', item });
+}
+
+// Ingredientes que faltan en el menú de la semana visible, agrupados por
+// nombre (sin distinguir mayúsculas) y en orden alfabético.
+function missingGroups() {
+  const groups = new Map();
+  week.forEach(day => (days[day] || []).forEach(entry => entry.ingredients.forEach(ing => {
+    if (ing.have) return;
+    const key = ing.name.toLowerCase();
+    if (!groups.has(key)) groups.set(key, { key, name: ing.name, items: [] });
+    groups.get(key).items.push({ day, entry, qty: ing.qty, where: withQty(`${dayShort(day)} · ${entry.name}`, ing.qty) });
+  })));
+  return [...groups.values()]
+    .map(g => ({ ...g, qtys: g.items.map(i => i.qty).filter(Boolean) }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+}
+
+// Marca como «tengo» ese ingrediente en todos los platos de la semana.
+function buyGroup(g) {
+  const seen = new Set();
+  const changes = [];
+  g.items.forEach(({ day, entry }) => {
+    if (seen.has(entry.id)) return;
+    seen.add(entry.id);
+    entry.ingredients.forEach(i => {
+      if (i.name.toLowerCase() === g.key && !i.have) changes.push({ day, entryId: entry.id, ingId: i.id });
+    });
+    store.setIngredients(day, entry, entry.ingredients.map(i =>
+      i.name.toLowerCase() === g.key ? { ...i, have: true } : i));
+  });
+  const where = [...new Set(g.items.map(i => `${dayShort(i.day)} · ${i.entry.name}`))].join(', ');
+  markBought({ source: 'menu', name: g.name, qty: g.qtys.join(' + '), where, changes });
+}
+
 function renderShopping(view) {
   // ---- Lista general: productos sueltos, igual para todas las semanas ----
   view.append(el('h2', { textContent: 'Lista de compra general' }));
@@ -546,10 +594,7 @@ function renderShopping(view) {
       });
       const bought = el('button', {
         className: 'status missing', textContent: 'Comprado', title: 'Quitar de la lista',
-        onclick: () => {
-          store.setGeneral(general.filter(i => i.id !== item.id));
-          markBought({ source: 'general', name: item.name, qty: item.qty || '', where: 'Lista general', item });
-        },
+        onclick: () => buyGeneral(item),
       });
       ul.append(el('li', {}, photoButton(item.name), el('span', { className: 'name', textContent: item.name }), qty, bought));
     });
@@ -562,48 +607,24 @@ function renderShopping(view) {
     el('p', { className: 'hint', textContent: `Ingredientes que faltan para la semana del ${weekLabel()}.` }),
   );
 
-  // Agrupa por nombre de ingrediente (sin distinguir mayúsculas)
-  const groups = new Map();
-  week.forEach(day => (days[day] || []).forEach(entry => entry.ingredients.forEach(ing => {
-    if (ing.have) return;
-    const key = ing.name.toLowerCase();
-    if (!groups.has(key)) groups.set(key, { name: ing.name, items: [] });
-    groups.get(key).items.push({ day, entry, qty: ing.qty, where: withQty(`${dayShort(day)} · ${entry.name}`, ing.qty) });
-  })));
-
-  if (!groups.size) {
+  const groups = missingGroups();
+  if (!groups.length) {
     view.append(el('p', { className: 'empty', textContent: '¡No falta nada! Tienes todos los ingredientes.' }));
   } else {
     const ul = el('ul', { className: 'ingredients shopping entry' });
-    [...groups.entries()]
-      .sort(([, a], [, b]) => a.name.localeCompare(b.name, 'es'))
-      .forEach(([key, g]) => {
-        const qtys = g.items.map(i => i.qty).filter(Boolean);
-        const bought = el('button', {
-          className: 'status missing',
-          textContent: 'Comprado',
-          title: 'Marcar como que ya lo tienes',
-          onclick: () => {
-            const seen = new Set();
-            const changes = [];
-            g.items.forEach(({ day, entry }) => {
-              if (seen.has(entry.id)) return;
-              seen.add(entry.id);
-              entry.ingredients.forEach(i => {
-                if (i.name.toLowerCase() === key && !i.have) changes.push({ day, entryId: entry.id, ingId: i.id });
-              });
-              store.setIngredients(day, entry, entry.ingredients.map(i =>
-                i.name.toLowerCase() === key ? { ...i, have: true } : i));
-            });
-            const where = [...new Set(g.items.map(i => `${dayShort(i.day)} · ${i.entry.name}`))].join(', ');
-            markBought({ source: 'menu', name: g.name, qty: qtys.join(' + '), where, changes });
-          },
-        });
-        const text = el('div', { className: 'name' },
-          el('div', {}, g.name, qtys.length ? el('span', { className: 'qty-tag', textContent: qtys.join(' + ') }) : ''),
-          el('div', { className: 'where', textContent: g.items.map(i => i.where).join(', ') }));
-        ul.append(el('li', {}, photoButton(g.name), text, bought));
+    groups.forEach(g => {
+      const qtys = g.qtys;
+      const bought = el('button', {
+        className: 'status missing',
+        textContent: 'Comprado',
+        title: 'Marcar como que ya lo tienes',
+        onclick: () => buyGroup(g),
       });
+      const text = el('div', { className: 'name' },
+        el('div', {}, g.name, qtys.length ? el('span', { className: 'qty-tag', textContent: qtys.join(' + ') }) : ''),
+        el('div', { className: 'where', textContent: g.items.map(i => i.where).join(', ') }));
+      ul.append(el('li', {}, photoButton(g.name), text, bought));
+    });
     view.append(ul);
   }
 
@@ -1066,6 +1087,99 @@ function renderRecipes(view) {
   });
 }
 
+// ---------- Resumen: lo de hoy de un vistazo (la app instalada se abre aquí) ----------
+
+// Chrome en Android avisa de que la web se puede instalar; guardamos el aviso
+// para lanzarlo desde un botón.
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', ev => { ev.preventDefault(); installPrompt = ev; render(); });
+window.addEventListener('appinstalled', () => { installPrompt = null; render(); });
+const isInstalled = () => matchMedia('(display-mode: standalone)').matches;
+
+function goTo(tab) {
+  current = tab;
+  window.scrollTo(0, 0);
+  render();
+}
+
+function summarySection(title, count, action) {
+  return el('div', { className: 'section-head summary-head' },
+    el('h2', { textContent: count === undefined ? title : `${title} (${count})` }),
+    action ? el('button', { className: 'link', textContent: action[0], onclick: action[1] }) : '');
+}
+
+function completeTask(task) {
+  if (task.repeat) return completeRepeating(task);
+  store.updateTask(task.id, { done: true, doneAt: Date.now() });
+  showUndo(`«${task.name}» hecha`, () => store.updateTask(task.id, { done: false, doneAt: null }));
+}
+
+function renderSummary(view) {
+  const today = todayISO();
+  view.append(el('h2', { className: 'summary-date', textContent: dayLong(today) }));
+
+  if (installPrompt && !isInstalled()) {
+    view.append(el('div', { className: 'install-banner' },
+      el('span', { textContent: 'Instala la app para tener esto a un toque desde la pantalla de inicio.' }),
+      el('button', {
+        className: 'primary', textContent: 'Instalar',
+        onclick: async () => {
+          const prompt = installPrompt;
+          installPrompt = null;
+          prompt.prompt();
+          await prompt.userChoice.catch(() => {});
+          render();
+        },
+      })));
+  }
+
+  // ---- Tareas: las mías (o todas en modo local) que tocan hoy o están atrasadas ----
+  const mine = myPendingTasks().sort((a, b) =>
+    (a.due || '9').localeCompare(b.due || '9') || (a.createdAt || 0) - (b.createdAt || 0));
+  const allPending = tasks.filter(isDue).length;
+  const others = allPending - mine.length;
+  view.append(summarySection(session?.email ? 'Mis tareas' : 'Tareas', mine.length,
+    ['Ver todas', () => { taskFilter = 'all'; goTo(TASKS); }]));
+  if (!mine.length) {
+    view.append(el('p', { className: 'empty', textContent: others ? `No tienes tareas pendientes (hay ${others} de otras personas o sin asignar).` : 'No hay tareas pendientes. 🎉' }));
+  } else {
+    view.append(el('ul', { className: 'ingredients tasks entry summary-list' }, ...mine.map(task => {
+      const late = task.repeat && task.due < today;
+      return el('li', {},
+        el('button', { className: 'status missing', textContent: 'Hecha', title: 'Marcar como hecha', onclick: () => completeTask(task) }),
+        el('div', { className: 'name' },
+          el('div', { textContent: task.name }),
+          task.repeat ? el('div', { className: late ? 'where late' : 'where', textContent: late ? `Atrasada desde el ${fullDate(task.due)}` : repeatLabel(task.repeat, task.start) }) : ''));
+    })));
+  }
+
+  // ---- Lista de la compra: lo general y lo que falta para el menú de esta semana ----
+  const groups = missingGroups();
+  view.append(summarySection('Para comprar', general.length + groups.length, ['Abrir lista', () => goTo(SHOPPING)]));
+  if (!general.length && !groups.length) {
+    view.append(el('p', { className: 'empty', textContent: '¡No falta nada!' }));
+  } else {
+    const buyButton = onclick => el('button', { className: 'status missing', textContent: 'Comprado', onclick });
+    const qtyText = text => text ? el('span', { className: 'qty-tag', textContent: text }) : '';
+    view.append(el('ul', { className: 'ingredients shopping entry summary-list' },
+      ...general.map(item => el('li', {}, photoButton(item.name),
+        el('div', { className: 'name' }, el('div', {}, item.name, qtyText(item.qty))), buyButton(() => buyGeneral(item)))),
+      ...groups.map(g => el('li', {}, photoButton(g.name),
+        el('div', { className: 'name' }, el('div', {}, g.name, qtyText(g.qtys.join(' + ')))), buyButton(() => buyGroup(g))))));
+  }
+
+  // ---- Lo que hay hoy en el menú ----
+  const todays = sortEntries(days[today] || []);
+  view.append(summarySection('Hoy en el menú', undefined, ['Ver el día', () => goTo(today)]));
+  if (!todays.length) {
+    view.append(el('p', { className: 'empty', textContent: 'No hay nada planificado para hoy.' }));
+  } else {
+    view.append(el('ul', { className: 'ingredients entry summary-list' }, ...todays.map(entry => el('li', {},
+      el('span', { className: 'meal', textContent: entry.meal }),
+      el('span', { className: 'name', textContent: entry.name })))));
+  }
+}
+
 function renderPeople(view) {
   const owner = isOwner();
   view.append(el('h2', { textContent: menuLabel(session) }));
@@ -1188,6 +1302,12 @@ function render() {
   const focusKey = active?.dataset?.focusKey;
   const typed = active?.value;
 
+  // El resumen es siempre de hoy: vuelve a la semana actual si hace falta.
+  if (current === SUMMARY && !week.includes(todayISO())) {
+    week = weekOf(mondayOf(new Date()));
+    days = {};
+    store?.setWeek(week);
+  }
   renderAccount();
   renderMenuPicker();
   renderWeekNav();
@@ -1201,6 +1321,7 @@ function render() {
   else if (current === SHARING && ready()) renderPeople(view);
   else if (current === TASKS) renderTasks(view);
   else if (current === RECIPES) renderRecipes(view);
+  else if (current === SUMMARY) renderSummary(view);
   else renderDay(view, week.includes(current) ? current : (current = week[0]));
   try { sessionStorage.setItem(TAB_KEY, current); } catch (e) { /* sin almacenamiento */ }
 
@@ -1212,10 +1333,15 @@ function render() {
   focusNext = null;
 }
 
+// Permite instalar la web como app y abrirla sin conexión (ver sw.js).
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  navigator.serviceWorker.register('./sw.js').catch(err => console.warn('Sin service worker:', err));
+}
+
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=17');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=18');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {

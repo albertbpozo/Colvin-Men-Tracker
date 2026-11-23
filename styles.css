@@ -247,3 +247,14 @@ textarea {
   .tasks li:not(.repeat-edit) .name { flex: 1 1 calc(100% - 110px); }
   .tasks li:not(.repeat-edit) .assignee { margin-left: auto; max-width: 60%; }
 }
+
+/* Resumen */
+.summary-date { margin-bottom: 4px; }
+.summary-head { margin: 20px 0 8px; }
+.summary-head h2 { font-size: 1rem; }
+.summary-list .meal { min-width: 76px; }
+.install-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--have-bg); color: var(--text); border-radius: 12px; padding: 10px 12px; margin: 8px 0 4px;
+}
+.install-banner span { flex: 1 1 200px; font-size: .9rem; }

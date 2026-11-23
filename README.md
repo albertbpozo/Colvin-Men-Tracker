@@ -29,6 +29,12 @@ App web sencilla para planificar el menú de la semana.
 - **👥 Personas:** el propietario de cada menú le pone nombre, da o quita acceso por email y puede poner un **alias** a cada persona («Mamá», «Bob»…), que se ve en lugar del correo en toda la app. Cada persona puede cambiar también su propio alias. Los alias van por menú.
 - **Quién puede crear menús:** el administrador lo gestiona en **👥 Personas** → «Quién puede crear menús». Quitar el permiso no borra los menús que esa persona ya tenga.
 
+- La pestaña **🏠 Resumen** junta lo de hoy: tus tareas pendientes (las asignadas a ti, incluidas las atrasadas), lo que falta comprar y lo que hay en el menú de hoy. Desde ahí se puede marcar una tarea como hecha o un producto como comprado.
+
+## Instalar en el móvil (Android)
+
+Abre la web en **Chrome** y pulsa **Instalar** en el aviso de la pestaña Resumen (o menú ⋮ → **Instalar aplicación** / **Añadir a pantalla de inicio**). Queda un icono en la pantalla de inicio que abre la app a pantalla completa directamente en el **Resumen**, y funciona también sin conexión. Si mantienes pulsado el icono aparecen accesos directos a **Lista de la compra**, **Mis tareas** y **Resumen de hoy** (se pueden arrastrar a la pantalla de inicio).
+
 ## Modos
 
 - **Local** (si `firebase-config.js` exporta `null`): los datos se guardan solo en el navegador.
