@@ -1,13 +1,15 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=15';
-import { createLocalStore, newIngredientId } from './local-store.js?v=15';
+import { firebaseConfig } from './firebase-config.js?v=16';
+import { createLocalStore, newIngredientId } from './local-store.js?v=16';
+import { RECIPE_PROMPT, DEFAULT_SERVINGS, scaleQty, parseIngredient, parseRecipes, ingredientLine } from './recipes.js?v=16';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
 const SHOPPING = 'compra';
 const SHARING = 'compartir';
 const TASKS = 'tareas';
+const RECIPES = 'recetas';
 
 // ---------- Fechas (siempre en hora local, como 'AAAA-MM-DD') ----------
 
@@ -63,6 +65,14 @@ let tasks = []; // lista de tareas pendientes, independiente del menú
 // Quién puede crear menús: lo decide el administrador (ver firestore.rules).
 let creators = { admin: false, canCreate: false, list: [] };
 let taskFilter = 'all'; // 'all' | 'mine'
+// Recetas del menú y estado de la pestaña (lo que se está escribiendo se guarda
+// en borradores, porque la vista se redibuja cuando otra persona cambia algo).
+let recipes = [];
+let openRecipe = null; // id de la receta desplegada
+let recipeDraft = null; // { id | null, name, servings, ingredients, steps } mientras se edita
+let importDraft = null; // texto pegado para importar, o null si el panel está cerrado
+let recipeSearch = '';
+let recipeNotice = '';
 
 const boughtExpired = () => bought.length > 0 && Date.now() - Math.max(...bought.map(r => r.at)) >= BOUGHT_TTL;
 
@@ -139,11 +149,13 @@ const handlers = {
     if (!fromCache) cleanPhotos();
   },
   onTasks(list) { tasks = list; render(); },
+  onRecipes(list) { recipes = list; render(); },
   onCreators(c) { creators = c; render(); },
   onStatus(s) {
     if (s.menuId !== session?.menuId) {
       // Otro menú (o ninguno): fuera los datos del anterior hasta que lleguen los nuevos.
       days = {}; general = []; bought = []; photos = {}; photosUsed = {}; tasks = []; pendingUndo = null;
+      recipes = []; openRecipe = recipeDraft = importDraft = null;
       clearTimeout(cleanTimer);
     }
     if (s.status !== session?.status) errorMessage = '';
@@ -254,6 +266,7 @@ function renderTabs() {
   const totalMissing = general.length + week.reduce((n, d) => n + missingCount(days[d]), 0);
   make(SHOPPING, '🛒 Lista de compra', totalMissing);
   make(TASKS, '✅ Tareas', myPendingTasks().length);
+  make(RECIPES, '📖 Recetas');
   if (ready()) make(SHARING, '👥 Personas');
 }
 
@@ -730,6 +743,217 @@ function renderTasks(view) {
   }
 }
 
+// ---------- Recetas ----------
+// Cada receta guarda sus cantidades para `baseServings` raciones; al cambiar
+// `servings` se recalculan (sin ir redondeando sobre lo ya redondeado).
+
+const servingsOf = r => r.servings || r.baseServings || DEFAULT_SERVINGS;
+const scaledIngredients = r => {
+  const factor = servingsOf(r) / (r.baseServings || servingsOf(r));
+  return (r.ingredients || []).map(i => ({ ...i, qty: scaleQty(i.qty, factor) }));
+};
+const raciones = n => `${n} ${n === 1 ? 'ración' : 'raciones'}`;
+
+function setServings(recipe, n) {
+  if (n >= 1 && n <= 99) store.updateRecipe(recipe.id, { servings: n });
+}
+
+function saveRecipeDraft() {
+  const d = recipeDraft;
+  const name = d.name.trim();
+  if (!name) { alert('Ponle un nombre a la receta.'); return; }
+  const servings = Math.max(1, Math.min(99, parseInt(d.servings, 10) || DEFAULT_SERVINGS));
+  const data = {
+    name,
+    // Lo escrito vale para estas raciones: pasan a ser la nueva base.
+    servings, baseServings: servings,
+    ingredients: d.ingredients.split('\n').map(l => l.replace(/^\s*[-*•]\s*/, '').trim()).filter(Boolean)
+      .map(l => ({ id: newIngredientId(), ...parseIngredient(l) })),
+    steps: d.steps.split('\n').map(l => l.replace(/^\s*(\d+[.)]|[-*•])\s*/, '').trim()).filter(Boolean),
+  };
+  if (d.id) store.updateRecipe(d.id, data);
+  else store.addRecipe({ ...data, createdAt: Date.now(), by: session?.email || '' });
+  openRecipe = d.id || null;
+  recipeDraft = null;
+  render();
+}
+
+function recipeForm() {
+  const d = recipeDraft;
+  const field = (tag, key, props) => {
+    const node = el(tag, { ...props, value: d[key] });
+    node.dataset.focusKey = `recipe-${key}`;
+    node.oninput = () => { d[key] = node.value; };
+    return node;
+  };
+  const form = el('form', { className: 'recipe-form' },
+    el('label', {}, 'Nombre', field('input', 'name', { placeholder: 'Lentejas con chorizo', autocomplete: 'off' })),
+    el('label', { className: 'servings-field' }, 'Raciones', field('input', 'servings', { type: 'number', min: 1, max: 99 })),
+    el('label', {}, 'Ingredientes (uno por línea: «Nombre: cantidad»)',
+      field('textarea', 'ingredients', { rows: 6, placeholder: 'Lentejas: 300 g\nChorizo: 1\nSal: al gusto' })),
+    el('label', {}, 'Pasos (uno por línea)',
+      field('textarea', 'steps', { rows: 5, placeholder: 'Remojar las lentejas la noche anterior.\nCocer 40 minutos.' })),
+    el('div', { className: 'form-actions' },
+      el('button', { type: 'button', textContent: 'Cancelar', onclick: () => { recipeDraft = null; render(); } }),
+      el('button', { type: 'submit', textContent: d.id ? 'Guardar' : 'Crear receta' })));
+  form.onsubmit = ev => { ev.preventDefault(); saveRecipeDraft(); };
+  return form;
+}
+
+function editRecipe(r) {
+  recipeDraft = {
+    id: r?.id || null,
+    name: r?.name || '',
+    servings: String(r ? servingsOf(r) : DEFAULT_SERVINGS),
+    ingredients: r ? scaledIngredients(r).map(ingredientLine).join('\n') : '',
+    steps: (r?.steps || []).join('\n'),
+  };
+  focusNext = 'recipe-name';
+  render();
+}
+
+function addRecipeToMenu(r, day, meal) {
+  lastMeal = meal;
+  store.addEntry(day, meal, r.name, scaledIngredients(r).map(i => ({ id: newIngredientId(), name: i.name, qty: i.qty || '', have: false })));
+  current = day; // se ve el plato recién añadido
+  render();
+}
+
+function recipeDetail(r) {
+  const n = servingsOf(r);
+  const box = el('div', { className: 'recipe-detail' });
+
+  box.append(el('div', { className: 'servings' },
+    el('button', { type: 'button', className: 'step', textContent: '−', title: 'Menos raciones', disabled: n <= 1, onclick: () => setServings(r, n - 1) }),
+    el('button', {
+      type: 'button', className: 'servings-count', textContent: raciones(n), title: 'Cambiar raciones',
+      onclick: () => {
+        const value = prompt('¿Para cuántas raciones?', String(n));
+        if (value !== null) setServings(r, parseInt(value, 10));
+      },
+    }),
+    el('button', { type: 'button', className: 'step', textContent: '+', title: 'Más raciones', disabled: n >= 99, onclick: () => setServings(r, n + 1) }),
+    r.baseServings && r.baseServings !== n
+      ? el('button', { type: 'button', className: 'link', textContent: `Volver a ${raciones(r.baseServings)}`, onclick: () => setServings(r, r.baseServings) })
+      : ''));
+
+  const ingredients = scaledIngredients(r);
+  if (ingredients.length) {
+    box.append(el('h4', { textContent: 'Ingredientes' }),
+      el('ul', { className: 'ingredients recipe-ingredients' }, ...ingredients.map(i => el('li', {},
+        el('span', { className: 'name', textContent: i.name }),
+        i.qty ? el('span', { className: 'qty-tag', textContent: i.qty }) : ''))));
+  }
+  if (r.steps?.length) {
+    box.append(el('h4', { textContent: 'Pasos' }), el('ol', { className: 'steps' }, ...r.steps.map(s => el('li', { textContent: s }))));
+  }
+
+  // Añadir al menú: día de la semana que se está viendo y comida.
+  const fallbackDay = week.includes(current) ? current : week.includes(todayISO()) ? todayISO() : week[0];
+  const daySelect = el('select', { title: 'Día' }, ...week.map(d => el('option', {
+    value: d, textContent: dayShort(d) + (d === todayISO() ? ' (hoy)' : ''), selected: d === fallbackDay,
+  })));
+  const mealSelect = el('select', { title: 'Comida' }, ...MEALS.map(m => el('option', { value: m, textContent: m, selected: m === lastMeal })));
+  box.append(el('div', { className: 'add-to-menu' },
+    daySelect, mealSelect,
+    el('button', { className: 'primary', textContent: 'Añadir al menú', onclick: () => addRecipeToMenu(r, daySelect.value, mealSelect.value) })));
+
+  box.append(el('div', { className: 'form-actions' },
+    el('button', { textContent: 'Editar', onclick: () => editRecipe(r) }),
+    el('button', {
+      textContent: 'Eliminar',
+      onclick: () => { if (confirm(`¿Eliminar la receta «${r.name}»?`)) { openRecipe = null; store.deleteRecipe(r.id); } },
+    })));
+  return box;
+}
+
+function renderImport(view) {
+  const textarea = el('textarea', { rows: 10, value: importDraft, placeholder: '# Lentejas con chorizo\nRaciones: 4\nIngredientes:\n- Lentejas: 300 g\nPasos:\n1. …' });
+  textarea.dataset.focusKey = 'recipe-import';
+  textarea.oninput = () => { importDraft = textarea.value; };
+  const copy = el('button', {
+    type: 'button', textContent: 'Copiar instrucciones para Claude',
+    onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(RECIPE_PROMPT);
+        copy.textContent = 'Copiadas ✓';
+      } catch (e) {
+        prompt('Copia este texto y pégaselo a Claude:', RECIPE_PROMPT);
+      }
+    },
+  });
+  const panel = el('div', { className: 'entry import-panel' },
+    el('p', { className: 'hint', textContent: 'Pásale a Claude las instrucciones y pídele las recetas (p. ej. «dame 3 recetas de cenas ligeras»). Luego pega aquí su respuesta: puedes pegar varias recetas a la vez.' }),
+    copy, textarea,
+    el('div', { className: 'form-actions' },
+      el('button', { textContent: 'Cancelar', onclick: () => { importDraft = null; render(); } }),
+      el('button', {
+        className: 'primary', textContent: 'Importar',
+        onclick: () => {
+          const found = parseRecipes(importDraft || '');
+          if (!found.length) {
+            alert('No he encontrado ninguna receta. Cada una debe empezar con «# Nombre» y tener ingredientes o pasos.');
+            return;
+          }
+          found.forEach(r => store.addRecipe({
+            name: r.name, servings: r.servings, baseServings: r.servings, steps: r.steps,
+            ingredients: r.ingredients.map(i => ({ id: newIngredientId(), ...i })),
+            createdAt: Date.now(), by: session?.email || '',
+          }));
+          importDraft = null;
+          recipeNotice = found.length === 1 ? `Receta importada: ${found[0].name}` : `${found.length} recetas importadas: ${found.map(r => r.name).join(', ')}`;
+          setTimeout(() => { recipeNotice = ''; render(); }, 6000);
+          render();
+        },
+      })));
+  view.append(panel);
+}
+
+function renderRecipes(view) {
+  view.append(el('div', { className: 'section-head first' },
+    el('h2', { textContent: 'Recetas' }),
+    el('div', { className: 'head-actions' },
+      el('button', { textContent: 'Importar', onclick: () => { importDraft = importDraft ?? ''; recipeDraft = null; focusNext = 'recipe-import'; render(); } }),
+      el('button', { className: 'primary', textContent: '+ Nueva', onclick: () => { importDraft = null; editRecipe(null); } }))));
+
+  if (recipeNotice) view.append(el('p', { className: 'notice', textContent: recipeNotice }));
+  if (importDraft !== null) renderImport(view);
+  if (recipeDraft && !recipeDraft.id) view.append(el('div', { className: 'entry' }, el('h3', { textContent: 'Nueva receta' }), recipeForm()));
+
+  if (!recipes.length) {
+    if (importDraft === null && !recipeDraft) {
+      view.append(el('p', { className: 'empty', textContent: 'Aún no hay recetas. Crea una con «+ Nueva» o importa las que te pase Claude.' }));
+    }
+    return;
+  }
+
+  if (recipes.length > 4) {
+    const search = el('input', { type: 'search', className: 'recipe-search', placeholder: 'Buscar receta o ingrediente…', value: recipeSearch, autocomplete: 'off' });
+    search.dataset.focusKey = 'recipe-search';
+    search.oninput = () => { recipeSearch = search.value; render(); };
+    view.append(search);
+  }
+  const term = recipeSearch.trim().toLowerCase();
+  const list = recipes
+    .filter(r => !term || r.name.toLowerCase().includes(term) || (r.ingredients || []).some(i => i.name.toLowerCase().includes(term)))
+    .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  if (!list.length) view.append(el('p', { className: 'empty', textContent: 'Ninguna receta coincide con la búsqueda.' }));
+
+  list.forEach(r => {
+    const isOpen = openRecipe === r.id;
+    const card = el('article', { className: isOpen ? 'entry recipe open' : 'entry recipe' });
+    const toggle = () => { openRecipe = isOpen ? null : r.id; if (recipeDraft?.id === r.id) recipeDraft = null; render(); };
+    const head = el('button', { className: 'recipe-head', onclick: toggle },
+      el('h3', { className: 'dish', textContent: r.name }),
+      el('span', { className: 'counter', textContent: `${raciones(servingsOf(r))} · ${(r.ingredients || []).length} ingr.` }),
+      el('span', { className: 'chevron', textContent: isOpen ? '▴' : '▾' }));
+    head.setAttribute('aria-expanded', String(isOpen));
+    card.append(head);
+    if (isOpen) card.append(recipeDraft?.id === r.id ? recipeForm() : recipeDetail(r));
+    view.append(card);
+  });
+}
+
 function renderPeople(view) {
   const owner = isOwner();
   view.append(el('h2', { textContent: menuLabel(session) }));
@@ -864,6 +1088,7 @@ function render() {
   else if (current === SHOPPING) renderShopping(view);
   else if (current === SHARING && ready()) renderPeople(view);
   else if (current === TASKS) renderTasks(view);
+  else if (current === RECIPES) renderRecipes(view);
   else renderDay(view, week.includes(current) ? current : (current = week[0]));
   try { sessionStorage.setItem(TAB_KEY, current); } catch (e) { /* sin almacenamiento */ }
 
@@ -878,7 +1103,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=15');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=16');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {

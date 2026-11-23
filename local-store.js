@@ -6,12 +6,13 @@ const BOUGHT_KEY = 'menu-semanal-comprado';
 const PHOTOS_KEY = 'menu-semanal-fotos';
 const PHOTOS_USED_KEY = 'menu-semanal-fotos-uso';
 const TASKS_KEY = 'menu-semanal-tareas';
+const RECIPES_KEY = 'menu-semanal-recetas';
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 // `byDate` guarda los platos por fecha 'AAAA-MM-DD'. La versión anterior los
 // guardaba por nombre de día ('Lunes'…); `legacyDay` lo traduce a una fecha.
-export function createLocalStore({ onData, onGeneral, onBought, onPhotos, onTasks, legacyDay }) {
+export function createLocalStore({ onData, onGeneral, onBought, onPhotos, onTasks, onRecipes, legacyDay }) {
   let byDate = {};
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
@@ -56,6 +57,15 @@ export function createLocalStore({ onData, onGeneral, onBought, onPhotos, onTask
   };
   queueMicrotask(() => onTasks(tasks));
 
+  let recipes = [];
+  try { recipes = JSON.parse(localStorage.getItem(RECIPES_KEY)) || []; } catch (e) { /* sin datos */ }
+  const saveRecipes = list => {
+    recipes = list;
+    try { localStorage.setItem(RECIPES_KEY, JSON.stringify(recipes)); } catch (e) { /* sin persistencia */ }
+    onRecipes(recipes);
+  };
+  queueMicrotask(() => onRecipes(recipes));
+
   let week = [];
   const emit = () => onData(Object.fromEntries(week.map(d => [d, byDate[d] || []])));
   const commit = () => {
@@ -70,8 +80,8 @@ export function createLocalStore({ onData, onGeneral, onBought, onPhotos, onTask
       week = dates;
       emit();
     },
-    addEntry(date, meal, name) {
-      (byDate[date] ||= []).push({ id: uid(), meal, name, ingredients: [], createdAt: Date.now() });
+    addEntry(date, meal, name, ingredients = []) {
+      (byDate[date] ||= []).push({ id: uid(), meal, name, ingredients, createdAt: Date.now() });
       commit();
     },
     deleteEntry(date, entry) {
@@ -109,6 +119,9 @@ export function createLocalStore({ onData, onGeneral, onBought, onPhotos, onTask
     addTask(task) { saveTasks([...tasks, { id: uid(), ...task }]); },
     updateTask(id, changes) { saveTasks(tasks.map(t => t.id === id ? { ...t, ...changes } : t)); },
     deleteTask(id) { saveTasks(tasks.filter(t => t.id !== id)); },
+    addRecipe(recipe) { saveRecipes([...recipes, { id: uid(), ...recipe }]); },
+    updateRecipe(id, changes) { saveRecipes(recipes.map(r => r.id === id ? { ...r, ...changes } : r)); },
+    deleteRecipe(id) { saveRecipes(recipes.filter(r => r.id !== id)); },
     resetWeek() {
       week.forEach(d => delete byDate[d]);
       commit();

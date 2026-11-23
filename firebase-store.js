@@ -15,10 +15,12 @@ const PHOTO_DAY = 'foto';
 // Cada tarea pendiente es una entrada con day 'tarea' (un documento por tarea,
 // así dos personas pueden cambiar tareas distintas a la vez sin pisarse).
 const TASK_DAY = 'tarea';
+// Las recetas, igual: una entrada con day 'receta' por receta.
+const RECIPE_DAY = 'receta';
 
 // Los platos se guardan con `day` = fecha 'AAAA-MM-DD'. Las versiones antiguas
 // usaban el nombre del día ('Lunes'…); `legacyDay` lo traduce a una fecha.
-export async function createFirebaseStore(config, { onData, onGeneral, onBought, onPhotos, onTasks, onStatus, onCreators, onError, legacyDay, legacyNames }) {
+export async function createFirebaseStore(config, { onData, onGeneral, onBought, onPhotos, onTasks, onRecipes, onStatus, onCreators, onError, legacyDay, legacyNames }) {
   const [{ initializeApp }, auth, fs] = await Promise.all([
     import(`${SDK}/firebase-app.js`),
     import(`${SDK}/firebase-auth.js`),
@@ -120,6 +122,8 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
         snap.metadata.fromCache), fail));
     menuListeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', TASK_DAY)),
       snap => onTasks(snap.docs.map(d => ({ id: d.id, ...d.data() }))), fail));
+    menuListeners.push(fs.onSnapshot(fs.query(entriesRef, fs.where('day', '==', RECIPE_DAY)),
+      snap => onRecipes(snap.docs.map(d => ({ id: d.id, ...d.data() }))), fail));
     migrateLegacyEntries(entriesRef).catch(fail);
   }
 
@@ -207,8 +211,8 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     signOut() {
       auth.signOut(authInstance).catch(fail);
     },
-    addEntry(day, meal, name) {
-      fs.addDoc(entriesRef, { day, meal, name, ingredients: [], createdAt: Date.now() }).catch(fail);
+    addEntry(day, meal, name, ingredients = []) {
+      fs.addDoc(entriesRef, { day, meal, name, ingredients, createdAt: Date.now() }).catch(fail);
     },
     deleteEntry(day, entry) {
       fs.deleteDoc(entryRef(entry.id)).catch(fail);
@@ -247,6 +251,15 @@ export async function createFirebaseStore(config, { onData, onGeneral, onBought,
     },
     updateTask(id, changes) {
       fs.updateDoc(entryRef(id), changes).catch(fail);
+    },
+    addRecipe(recipe) {
+      fs.addDoc(entriesRef, { day: RECIPE_DAY, meal: 'Receta', kind: 'recipe', ...recipe }).catch(fail);
+    },
+    updateRecipe(id, changes) {
+      fs.updateDoc(entryRef(id), changes).catch(fail);
+    },
+    deleteRecipe(id) {
+      fs.deleteDoc(entryRef(id)).catch(fail);
     },
     deleteTask(id) {
       fs.deleteDoc(entryRef(id)).catch(fail);
