@@ -229,3 +229,21 @@ textarea {
 .import-panel { display: flex; flex-direction: column; gap: 10px; }
 .import-panel > button { align-self: flex-start; }
 .import-panel .hint { margin: 0; }
+
+/* Tareas que se repiten */
+.repeat-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-basis: 100%; font-size: .9rem; color: var(--muted); }
+.repeat-controls select, .repeat-controls input { padding: 4px 8px; font-size: .9rem; }
+.repeat-controls .repeat-n { flex: 0 0 64px; }
+.repeat-controls input[type="date"] { flex: 0 1 auto; }
+.repeat-btn { opacity: .35; filter: grayscale(1); }
+.repeat-btn.active { opacity: 1; filter: none; }
+.repeat-btn:hover { opacity: 1; }
+.tasks .where.late { color: var(--missing); font-weight: 600; }
+.tasks li.repeat-edit { flex-direction: column; align-items: stretch; background: var(--bg); margin: 0 -14px; padding: 10px 14px; border-top: 0; }
+.tasks li.repeat-edit .form-actions { margin-top: 8px; }
+.status:disabled { cursor: default; }
+@media (max-width: 560px) {
+  .tasks li:not(.repeat-edit) { flex-wrap: wrap; row-gap: 4px; }
+  .tasks li:not(.repeat-edit) .name { flex: 1 1 calc(100% - 110px); }
+  .tasks li:not(.repeat-edit) .assignee { margin-left: auto; max-width: 60%; }
+}

@@ -1,8 +1,9 @@
 // El ?v= obliga al navegador a descargar la versión nueva tras cada cambio;
 // súbelo a la vez en index.html y aquí.
-import { firebaseConfig } from './firebase-config.js?v=16';
-import { createLocalStore, newIngredientId } from './local-store.js?v=16';
-import { RECIPE_PROMPT, DEFAULT_SERVINGS, scaleQty, parseIngredient, parseRecipes, ingredientLine } from './recipes.js?v=16';
+import { firebaseConfig } from './firebase-config.js?v=17';
+import { createLocalStore, newIngredientId } from './local-store.js?v=17';
+import { PRESETS, presetOf, repeatFromDraft, repeatLabel, nextAfter, onOrAfter } from './repeat.js?v=17';
+import { RECIPE_PROMPT, DEFAULT_SERVINGS, scaleQty, parseIngredient, parseRecipes, ingredientLine } from './recipes.js?v=17';
 
 const DAY_NAMES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena'];
@@ -65,6 +66,10 @@ let tasks = []; // lista de tareas pendientes, independiente del menú
 // Quién puede crear menús: lo decide el administrador (ver firestore.rules).
 let creators = { admin: false, canCreate: false, list: [] };
 let taskFilter = 'all'; // 'all' | 'mine'
+// Borradores de tareas (la vista se redibuja cuando otra persona cambia algo).
+const newTaskDraft = () => ({ name: '', preset: 'none', n: 2, unit: 'week', start: todayISO() });
+let taskDraft = null; // formulario de nueva tarea (se crea al abrir la pestaña)
+let repeatEdit = null; // { id, preset, n, unit, start } al cambiar la repetición de una tarea
 // Recetas del menú y estado de la pestaña (lo que se está escribiendo se guarda
 // en borradores, porque la vista se redibuja cuando otra persona cambia algo).
 let recipes = [];
@@ -112,15 +117,18 @@ function undoBought(record) {
   store.removeBought(record);
 }
 
-function showToast(record) {
+// Aviso abajo con «Deshacer» durante unos segundos.
+function showUndo(text, undo) {
   document.querySelector('.toast')?.remove();
   clearTimeout(toastTimer);
   const box = el('div', { className: 'toast', role: 'status' },
-    el('span', { textContent: `${record.name} comprado` }),
-    el('button', { textContent: 'Deshacer', onclick: () => { box.remove(); undoBought(record); } }));
+    el('span', { textContent: text }),
+    el('button', { textContent: 'Deshacer', onclick: () => { box.remove(); undo(); } }));
   document.body.append(box);
   toastTimer = setTimeout(() => box.remove(), 6000);
 }
+
+const showToast = record => showUndo(`${record.name} comprado`, () => undoBought(record));
 
 const handlers = {
   onData(data) {
@@ -155,7 +163,7 @@ const handlers = {
     if (s.menuId !== session?.menuId) {
       // Otro menú (o ninguno): fuera los datos del anterior hasta que lleguen los nuevos.
       days = {}; general = []; bought = []; photos = {}; photosUsed = {}; tasks = []; pendingUndo = null;
-      recipes = []; openRecipe = recipeDraft = importDraft = null;
+      recipes = []; openRecipe = recipeDraft = importDraft = null; repeatEdit = null;
       clearTimeout(cleanTimer);
     }
     if (s.status !== session?.status) errorMessage = '';
@@ -645,7 +653,52 @@ const taskPeople = () => session?.status === 'ready'
   : [...new Set(tasks.map(t => t.assignee).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
 const personLabel = p => !p ? 'Sin asignar' : p === session?.email ? `${display(p)} (yo)` : display(p);
 // En el contador de la pestaña: las mías si hay sesión; si no, todas las pendientes.
-const myPendingTasks = () => tasks.filter(t => !t.done && (!session?.email || t.assignee === session.email));
+// Las tareas que se repiten solo están pendientes desde el día que les toca.
+const isDue = t => !t.done && (!t.repeat || t.due <= todayISO());
+const myPendingTasks = () => tasks.filter(t => isDue(t) && (!session?.email || t.assignee === session.email));
+const fullDate = iso => fromISO(iso).toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
+
+// Hecha una tarea que se repite: pasa a la siguiente fecha (sin acumular las
+// que se hayan saltado) y se puede deshacer.
+function completeRepeating(task) {
+  const today = todayISO();
+  const due = nextAfter(task.start, task.repeat, task.due > today ? task.due : today);
+  store.updateTask(task.id, { due, lastDoneAt: Date.now(), lastDoneBy: session?.email || '' });
+  showUndo(`«${task.name}» hecha · vuelve el ${fullDate(due)}`, () => store.updateTask(task.id, {
+    due: task.due, lastDoneAt: task.lastDoneAt ?? null, lastDoneBy: task.lastDoneBy ?? null,
+  }));
+}
+
+// Desplegable de repetición; con «Otra…» se elige número y unidad. Siempre
+// pregunta desde qué día empieza.
+function repeatControls(draft) {
+  const box = el('div', { className: 'repeat-controls' });
+  const preset = el('select', { title: 'Repetir' }, ...PRESETS.map(([value, label]) => el('option', { value, textContent: label, selected: value === draft.preset })));
+  preset.onchange = () => { draft.preset = preset.value; render(); };
+  box.append(preset);
+  if (draft.preset === 'custom') {
+    const n = el('input', { type: 'number', min: 1, max: 365, value: draft.n, className: 'repeat-n', title: 'Cada cuántos' });
+    n.oninput = () => { draft.n = n.value; };
+    const unit = el('select', { title: 'Unidad' }, ...[['day', 'días'], ['week', 'semanas'], ['month', 'meses']]
+      .map(([value, label]) => el('option', { value, textContent: label, selected: value === draft.unit })));
+    unit.onchange = () => { draft.unit = unit.value; };
+    box.append(el('span', { textContent: 'cada' }), n, unit);
+  }
+  if (draft.preset !== 'none') {
+    const start = el('input', { type: 'date', value: draft.start, title: 'Primer día' });
+    start.oninput = () => { draft.start = start.value || todayISO(); };
+    box.append(el('span', { textContent: 'desde' }), start);
+  }
+  return box;
+}
+
+// Campos de una tarea que se repite según el borrador.
+function repeatFields(draft) {
+  const repeat = repeatFromDraft(draft);
+  if (!repeat) return { repeat: null, start: null, due: null };
+  const start = draft.start || todayISO();
+  return { repeat, start, due: onOrAfter(start, repeat, todayISO()) };
+}
 
 function assigneePicker(value, onPick, focusKey) {
   if (session) {
@@ -665,25 +718,70 @@ function assigneePicker(value, onPick, focusKey) {
 }
 
 function taskRow(task) {
-  const status = el('button', {
-    className: `status ${task.done ? 'have' : 'missing'}`,
-    textContent: task.done ? 'Hecha' : 'Pendiente',
-    title: 'Pulsa para cambiar',
-    onclick: () => store.updateTask(task.id, { done: !task.done, doneAt: task.done ? null : Date.now() }),
-  });
+  const today = todayISO();
+  const status = task.repeat
+    ? el('button', {
+      className: `status ${isDue(task) ? 'missing' : 'have'}`,
+      textContent: isDue(task) ? 'Pendiente' : 'Programada',
+      title: isDue(task) ? 'Marcar como hecha (volverá a aparecer)' : 'Aún no toca',
+      disabled: !isDue(task),
+      onclick: () => completeRepeating(task),
+    })
+    : el('button', {
+      className: `status ${task.done ? 'have' : 'missing'}`,
+      textContent: task.done ? 'Hecha' : 'Pendiente',
+      title: 'Pulsa para cambiar',
+      onclick: () => store.updateTask(task.id, { done: !task.done, doneAt: task.done ? null : Date.now() }),
+    });
   const del = el('button', {
     className: 'icon', textContent: '✕', title: 'Eliminar tarea',
-    onclick: () => { if (confirm(`¿Eliminar la tarea «${task.name}»?`)) store.deleteTask(task.id); },
+    onclick: () => {
+      const extra = task.repeat ? ' Dejará de repetirse.' : '';
+      if (confirm(`¿Eliminar la tarea «${task.name}»?${extra}`)) store.deleteTask(task.id);
+    },
   });
-  const by = task.by && task.by !== task.assignee ? `Creada por ${display(task.by)}` : '';
+  const repeatBtn = el('button', {
+    className: task.repeat ? 'icon repeat-btn active' : 'icon repeat-btn', textContent: '🔁',
+    title: task.repeat ? 'Cambiar la repetición' : 'Hacer que se repita',
+    onclick: () => {
+      repeatEdit = repeatEdit?.id === task.id ? null : {
+        id: task.id, preset: task.repeat ? presetOf(task.repeat) : '1-week',
+        n: task.repeat?.n || 2, unit: task.repeat?.unit || 'week', start: task.start || today,
+      };
+      render();
+    },
+  });
+
+  const details = [];
+  if (task.repeat) {
+    const when = task.due > today ? `próxima: ${fullDate(task.due)}`
+      : task.due < today ? `atrasada desde el ${fullDate(task.due)}` : 'hoy';
+    details.push(el('div', { className: task.due < today ? 'where late' : 'where', textContent: `${repeatLabel(task.repeat, task.start)} · ${when}` }));
+  }
+  if (task.by && task.by !== task.assignee) details.push(el('div', { className: 'where', textContent: `Creada por ${display(task.by)}` }));
   const text = el('div', { className: 'name' },
     el('div', { textContent: task.name, ondblclick: () => {
       const value = prompt('Tarea:', task.name);
       if (value && value.trim()) store.updateTask(task.id, { name: value.trim() });
     } }),
-    by ? el('div', { className: 'where', textContent: by }) : '');
+    ...details);
   const picker = assigneePicker(task.assignee, assignee => store.updateTask(task.id, { assignee }));
-  return el('li', { className: task.done ? 'done' : '' }, status, text, picker, del);
+  const rows = [el('li', { className: task.done ? 'done' : '' }, status, text, picker, task.done ? '' : repeatBtn, del)];
+
+  if (repeatEdit?.id === task.id) {
+    const save = el('button', {
+      className: 'primary', textContent: 'Guardar',
+      onclick: () => {
+        store.updateTask(task.id, { ...repeatFields(repeatEdit), done: false, doneAt: null });
+        repeatEdit = null;
+        render();
+      },
+    });
+    rows.push(el('li', { className: 'repeat-edit' }, repeatControls(repeatEdit),
+      el('div', { className: 'form-actions' },
+        el('button', { textContent: 'Cancelar', onclick: () => { repeatEdit = null; render(); } }), save)));
+  }
+  return rows;
 }
 
 function renderTasks(view) {
@@ -692,21 +790,26 @@ function renderTasks(view) {
     view.append(el('datalist', { id: 'task-people' }, ...taskPeople().map(p => el('option', { value: p }))));
   }
 
-  const form = el('form', { className: 'add-task' });
-  form.append(
-    el('input', { name: 'task', placeholder: 'Nueva tarea (p. ej. Sacar la basura)', autocomplete: 'off', required: true }),
+  taskDraft ||= newTaskDraft();
+  const nameInput = el('input', { name: 'task', value: taskDraft.name, placeholder: 'Nueva tarea (p. ej. Sacar la basura)', autocomplete: 'off', required: true });
+  nameInput.dataset.focusKey = 'task';
+  nameInput.oninput = () => { taskDraft.name = nameInput.value; };
+  const form = el('form', { className: 'add-task' },
+    nameInput,
     assigneePicker(lastAssignee, a => { lastAssignee = a; }, 'task-assignee'),
-    el('button', { type: 'submit', textContent: 'Añadir' }));
-  form.task.dataset.focusKey = 'task';
+    el('button', { type: 'submit', textContent: 'Añadir' }),
+    repeatControls(taskDraft));
   form.onsubmit = ev => {
     ev.preventDefault();
-    const name = form.task.value.trim();
+    const name = taskDraft.name.trim();
     if (!name) return;
     const assignee = (form.querySelector('.assignee').value || '').trim();
     lastAssignee = assignee;
-    form.task.value = '';
+    const fields = repeatFields(taskDraft);
+    taskDraft = newTaskDraft();
     focusNext = 'task';
-    store.addTask({ name, assignee, done: false, createdAt: Date.now(), by: session?.email || '' });
+    store.addTask({ name, assignee, done: false, createdAt: Date.now(), by: session?.email || '', ...(fields.repeat ? fields : {}) });
+    render();
   };
   view.append(form);
 
@@ -721,13 +824,22 @@ function renderTasks(view) {
   }
 
   const visible = tasks.filter(t => taskFilter !== 'mine' || !session?.email || t.assignee === session.email);
-  const pending = visible.filter(t => !t.done).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-  const done = visible.filter(t => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+  // Primero las atrasadas, luego las de hoy y después las sueltas, por antigüedad.
+  const pending = visible.filter(isDue).sort((a, b) =>
+    (a.due || '9').localeCompare(b.due || '9') || (a.createdAt || 0) - (b.createdAt || 0));
+  const scheduled = visible.filter(t => t.repeat && !isDue(t)).sort((a, b) => a.due.localeCompare(b.due));
+  const done = visible.filter(t => t.done && !t.repeat).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
 
   if (!pending.length) {
     view.append(el('p', { className: 'empty', textContent: taskFilter === 'mine' ? 'No tienes tareas pendientes.' : 'No hay tareas pendientes.' }));
   } else {
-    view.append(el('ul', { className: 'ingredients tasks entry' }, ...pending.map(taskRow)));
+    view.append(el('ul', { className: 'ingredients tasks entry' }, ...pending.flatMap(taskRow)));
+  }
+
+  if (scheduled.length) {
+    view.append(
+      el('div', { className: 'section-head' }, el('h2', { textContent: `Programadas (${scheduled.length})` })),
+      el('ul', { className: 'ingredients tasks entry scheduled' }, ...scheduled.flatMap(taskRow)));
   }
 
   if (done.length) {
@@ -739,7 +851,7 @@ function renderTasks(view) {
     });
     view.append(
       el('div', { className: 'section-head' }, el('h2', { textContent: `Hechas (${done.length})` }), clear),
-      el('ul', { className: 'ingredients tasks entry' }, ...done.map(taskRow)));
+      el('ul', { className: 'ingredients tasks entry' }, ...done.flatMap(taskRow)));
   }
 }
 
@@ -1103,7 +1215,7 @@ function render() {
 if (firebaseConfig) {
   render();
   try {
-    const { createFirebaseStore } = await import('./firebase-store.js?v=16');
+    const { createFirebaseStore } = await import('./firebase-store.js?v=17');
     store = await createFirebaseStore(firebaseConfig, { ...handlers, legacyDay, legacyNames: DAY_NAMES });
     store.setWeek(week);
   } catch (err) {
